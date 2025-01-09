@@ -16,12 +16,16 @@ import {
 } from "solid-js";
 import { useEditorContext } from "./context";
 
-export function Field(props: ParentProps<{ name: string; icon: JSX.Element }>) {
+export function Field(
+  props: ParentProps<{ name: string; icon?: JSX.Element; value?: string }>
+) {
   return (
     <div class="flex flex-col gap-[0.75rem]">
       <span class="flex flex-row items-center gap-[0.375rem] text-gray-500 text-[0.875rem]">
         {props.icon}
         {props.name}
+
+        {props.value && <div class="ml-auto">{props.value}</div>}
       </span>
       {props.children}
     </div>
@@ -113,7 +117,7 @@ export const Dialog = {
       <KDialog {...props}>
         <KDialog.Portal>
           {!props.hideOverlay && (
-            <KDialog.Overlay class="fixed inset-0 z-50 bg-black-transparent-80 ui-expanded:animate-in ui-expanded:fade-in ui-closed:animate-out ui-closed:fade-out" />
+            <KDialog.Overlay class="fixed inset-0 z-50 bg-[#000]/80 ui-expanded:animate-in ui-expanded:fade-in ui-closed:animate-out ui-closed:fade-out" />
           )}
           <div class="fixed inset-0 z-50 flex items-center justify-center">
             <KDialog.Content
@@ -173,7 +177,9 @@ export function DialogContent(
   return (
     <>
       <Dialog.Header>
-        <KDialog.Title>{props.title}</KDialog.Title>
+        <KDialog.Title class="text-gray-500 dark:text-gray-500">
+          {props.title}
+        </KDialog.Title>
       </Dialog.Header>
       <Dialog.Content class={props.class}>{props.children}</Dialog.Content>
       <Dialog.Footer>{props.confirm}</Dialog.Footer>
@@ -191,7 +197,7 @@ export function MenuItem<T extends ValidComponent = "button">(
       {...props}
       class={cx(
         props.class,
-        "flex flex-row shrink-0 items-center gap-[0.375rem] px-[0.675rem] h-[2rem] rounded-[0.5rem] outline-none text-nowrap overflow-hidden text-ellipsis w-full max-w-full",
+        "flex flex-row shrink-0 items-center gap-[0.375rem] px-[0.675rem] py-[0.375rem] rounded-[0.5rem] outline-none text-nowrap overflow-hidden text-ellipsis w-full max-w-full",
         "text-[0.875rem] text-gray-400 disabled:text-gray-400 ui-highlighted:bg-gray-100 ui-highlighted:text-gray-500"
       )}
     />
@@ -308,15 +314,7 @@ export function ComingSoonTooltip(
         {trigger.children}
       </KTooltip.Trigger>
       <KTooltip.Portal>
-        <KTooltip.Content
-          class="p-2 font-medium bg-gray-500 text-white ui-expanded:animate-in ui-expanded:slide-in-from-bottom-1 ui-expanded:fade-in ui-closed:animate-out ui-closed:slide-out-to-bottom-1 ui-closed:fade-out"
-          style={{
-            color: "white",
-            "border-radius": "8px",
-            "font-size": "12px",
-            "z-index": "1000",
-          }}
-        >
+        <KTooltip.Content class="p-2 font-medium bg-gray-500 dark:bg-gray-700 text-gray-50 ui-expanded:animate-in ui-expanded:slide-in-from-bottom-1 ui-expanded:fade-in ui-closed:animate-out ui-closed:slide-out-to-bottom-1 ui-closed:fade-out rounded-lg text-xs z-[1000]">
           Coming Soon
         </KTooltip.Content>
       </KTooltip.Portal>

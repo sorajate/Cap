@@ -17,7 +17,10 @@ import {
 } from "solid-js";
 import { createStore } from "solid-js/store";
 import { createMutation } from "@tanstack/solid-query";
-import { createEventListenerMap } from "@solid-primitives/event-listener";
+import {
+  createEventListener,
+  createEventListenerMap,
+} from "@solid-primitives/event-listener";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { events, commands } from "~/utils/tauri";
@@ -69,15 +72,8 @@ export function Editor() {
 }
 
 function Inner() {
-  const {
-    project,
-    videoId,
-    playbackTime,
-    setPlaybackTime,
-    playing,
-    setPlaying,
-    previewTime,
-  } = useEditorContext();
+  const { project, playbackTime, setPlaybackTime, playing, previewTime } =
+    useEditorContext();
 
   onMount(() => {
     events.editorStateChanged.listen((e) => {
@@ -116,50 +112,22 @@ function Inner() {
     )
   );
 
-  const togglePlayback = async () => {
-    try {
-      if (playing()) {
-        await commands.stopPlayback(videoId);
-        setPlaying(false);
-      } else {
-        await commands.startPlayback(videoId);
-        setPlaying(true);
-      }
-    } catch (error) {
-      console.error("Error toggling playback:", error);
-      setPlaying(false);
-    }
-  };
-
-  createEffect(() => {
-    const handleKeyDown = async (e: KeyboardEvent) => {
-      if (e.code === "Space" && e.target === document.body) {
-        e.preventDefault();
-        await togglePlayback();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  });
-
   return (
-    <div
-      class="p-5 flex flex-col gap-4 w-screen h-screen divide-y bg-gray-50 rounded-lg leading-5 animate-in fade-in"
-      data-tauri-drag-region
-    >
+    <div class="w-screen h-screen flex flex-col">
       <Header />
-      <div class="rounded-2xl overflow-hidden  shadow border flex-1 flex flex-col divide-y bg-white">
-        <div class="flex flex-row flex-1 divide-x overflow-y-hidden">
-          <Player />
-          <ConfigSidebar />
+      <div
+        class="p-5 pt-0 flex-1 w-full overflow-y-hidden flex flex-col gap-4 bg-gray-50 leading-5 animate-in fade-in"
+        data-tauri-drag-region
+      >
+        <div class="rounded-2xl overflow-hidden  shadow border flex-1 flex flex-col divide-y bg-white">
+          <div class="flex flex-row flex-1 divide-x overflow-y-hidden">
+            <Player />
+            <ConfigSidebar />
+          </div>
+          <Timeline />
         </div>
-        <Timeline />
+        <Dialogs />
       </div>
-      <Dialogs />
     </div>
   );
 }
@@ -195,8 +163,9 @@ function Dialogs() {
                 });
 
                 const createPreset = createMutation(() => ({
-                  mutationFn: async () =>
-                    presets.createPreset({ ...form, config: project }),
+                  mutationFn: async () => {
+                    await presets.createPreset({ ...form, config: project });
+                  },
                   onSuccess: () => {
                     setDialog((d) => ({ ...d, open: false }));
                   },
@@ -299,9 +268,7 @@ function Dialogs() {
                     }
                   >
                     <p class="text-gray-400">
-                      Lorem ipsum dolor sit amet, consectetur adipiscing elit
-                      sed do eiusmod tempor incididunt ut labore et dolore magna
-                      aliqua.
+                      Are you sure you want to delete this preset?
                     </p>
                   </DialogContent>
                 );
@@ -321,7 +288,7 @@ function Dialogs() {
                   size: dialog().size,
                 });
 
-                const display = editorInstance.recordings.display;
+                const display = editorInstance.recordings.segments[0].display;
 
                 const styles = createMemo(() => {
                   return {
@@ -340,8 +307,8 @@ function Dialogs() {
                   };
                 });
 
-                let cropAreaRef: HTMLDivElement;
-                let cropTargetRef: HTMLDivElement;
+                let cropAreaRef!: HTMLDivElement;
+                let cropTargetRef!: HTMLDivElement;
 
                 return (
                   <>
@@ -380,8 +347,8 @@ function Dialogs() {
                           setCrop({
                             position: { x: 0, y: 0 },
                             size: {
-                              x: editorInstance.recordings.display.width,
-                              y: editorInstance.recordings.display.height,
+                              x: display.width,
+                              y: display.height,
                             },
                           })
                         }
@@ -391,11 +358,7 @@ function Dialogs() {
                     </Dialog.Header>
                     <Dialog.Content>
                       <div class="flex flex-row justify-center">
-                        <div
-                          class="relative bg-blue-200"
-                          // biome-ignore lint/style/noNonNullAssertion: ref
-                          ref={cropAreaRef!}
-                        >
+                        <div class="relative bg-blue-200" ref={cropAreaRef}>
                           <div class="divide-black-transparent-10 overflow-hidden rounded-lg">
                             <img
                               class="shadow pointer-events-none max-h-[70vh]"
@@ -407,8 +370,7 @@ function Dialogs() {
                           </div>
                           <div
                             class="bg-white-transparent-20 absolute cursor-move"
-                            // biome-ignore lint/style/noNonNullAssertion: ref
-                            ref={cropTargetRef!}
+                            ref={cropTargetRef}
                             style={styles()}
                             onMouseDown={(downEvent) => {
                               const original = {
@@ -534,8 +496,7 @@ function Dialogs() {
                                                     clamp(
                                                       original.size.x + diff.x,
                                                       MIN_SIZE,
-                                                      editorInstance.recordings
-                                                        .display.width -
+                                                      display.width -
                                                         crop.position.x
                                                     )
                                                   )
@@ -549,9 +510,7 @@ function Dialogs() {
                                                       original.position.x +
                                                         diff.x,
                                                       0,
-                                                      editorInstance.recordings
-                                                        .display.width -
-                                                        MIN_SIZE
+                                                      display.width - MIN_SIZE
                                                     )
                                                   )
                                                 );
@@ -562,8 +521,7 @@ function Dialogs() {
                                                     clamp(
                                                       original.size.x - diff.x,
                                                       MIN_SIZE,
-                                                      editorInstance.recordings
-                                                        .display.width
+                                                      display.width
                                                     )
                                                   )
                                                 );
@@ -577,8 +535,7 @@ function Dialogs() {
                                                     clamp(
                                                       original.size.y + diff.y,
                                                       MIN_SIZE,
-                                                      editorInstance.recordings
-                                                        .display.height -
+                                                      display.height -
                                                         crop.position.y
                                                     )
                                                   )
@@ -592,9 +549,7 @@ function Dialogs() {
                                                       original.position.y +
                                                         diff.y,
                                                       0,
-                                                      editorInstance.recordings
-                                                        .display.height -
-                                                        MIN_SIZE
+                                                      display.height - MIN_SIZE
                                                     )
                                                   )
                                                 );
@@ -605,8 +560,7 @@ function Dialogs() {
                                                     clamp(
                                                       original.size.y - diff.y,
                                                       MIN_SIZE,
-                                                      editorInstance.recordings
-                                                        .display.height
+                                                      display.height
                                                     )
                                                   )
                                                 );

@@ -12,12 +12,7 @@ export async function POST(request: NextRequest) {
   if (!user) {
     console.error("User not found");
 
-    return new Response(JSON.stringify({ error: true }), {
-      status: 401,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    return Response.json({ error: true }, { status: 401 });
   }
 
   if (!user.stripeCustomerId) {
@@ -40,7 +35,7 @@ export async function POST(request: NextRequest) {
 
   const { url } = await stripe.billingPortal.sessions.create({
     customer: customerId as string,
-    return_url: `${process.env.NEXT_PUBLIC_URL}/dashboard/settings/billing`,
+    return_url: `${process.env.NEXT_PUBLIC_URL}/dashboard/settings/workspace`,
   });
   return NextResponse.json(url);
 }

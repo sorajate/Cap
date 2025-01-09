@@ -9,11 +9,11 @@ import { CSPostHogProvider } from "./providers";
 import Intercom from "@intercom/messenger-js-sdk";
 
 export const metadata: Metadata = {
-  title: "Cap — Beautiful, shareable screen recordings.",
+  title: "Cap — Beautiful screen recordings, owned by you.",
   description:
     "Cap is the open source alternative to Loom. Lightweight, powerful, and stunning. Record and share in seconds.",
   openGraph: {
-    title: "Cap — Beautiful, shareable screen recordings.",
+    title: "Cap — Beautiful screen recordings, owned by you.",
     description:
       "Cap is the open source alternative to Loom. Lightweight, powerful, and stunning. Record and share in seconds.",
     type: "website",
@@ -62,6 +62,7 @@ export default async function RootLayout({
           />
           <link rel="manifest" href="/site.webmanifest" />
           <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#5bbad5" />
+          <link rel="shortcut icon" href="/favicon.ico" />
           <meta name="msapplication-TileColor" content="#da532c" />
           <meta name="theme-color" content="#ffffff" />
         </head>

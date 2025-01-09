@@ -55,24 +55,25 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
 
   if (!user) {
-    return new Response(JSON.stringify({ error: true }), {
-      status: 401,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    return Response.json({ error: true }, { status: 401 });
   }
 
   let isSubscribed = isUserOnProPlan({
     subscriptionStatus: user.stripeSubscriptionStatus as string,
   });
+
+  // Check for third-party Stripe subscription
+  if (user.thirdPartyStripeSubscriptionId) {
+    isSubscribed = true;
+  }
+
   if (!isSubscribed && !user.stripeSubscriptionId && user.stripeCustomerId) {
     try {
       const subscriptions = await stripe.subscriptions.list({
         customer: user.stripeCustomerId,
       });
       const activeSubscription = subscriptions.data.find(
-        (sub) => sub.status === 'active'
+        (sub) => sub.status === "active"
       );
       if (activeSubscription) {
         isSubscribed = true;
@@ -86,7 +87,7 @@ export async function GET(req: NextRequest) {
           .where(eq(users.id, user.id));
       }
     } catch (error) {
-      console.error('Error fetching subscription from Stripe:', error);
+      console.error("Error fetching subscription from Stripe:", error);
     }
   }
 

@@ -1,7 +1,40 @@
-use std::path::Path;
+use std::{ffi::OsString, path::PathBuf};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc::Receiver;
+
+#[cfg(windows)]
+pub fn get_last_win32_error_formatted() -> String {
+    format_error_message(unsafe { windows::Win32::Foundation::GetLastError().0 })
+}
+
+#[cfg(windows)]
+pub fn format_error_message(error_code: u32) -> String {
+    use windows::{
+        core::PWSTR,
+        Win32::System::Diagnostics::Debug::{FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM},
+    };
+
+    let mut buffer = vec![0u16; 1024];
+    match unsafe {
+        FormatMessageW(
+            FORMAT_MESSAGE_FROM_SYSTEM,
+            None,
+            error_code,
+            0,
+            PWSTR(buffer.as_mut_ptr()),
+            buffer.len() as u32,
+            None,
+        )
+    } {
+        0 => format!("Unknown error: {}", error_code),
+        len => String::from_utf16_lossy(&buffer[..len as usize])
+            .trim()
+            .to_string(),
+    }
+}
 
 #[cfg(unix)]
-pub fn create_named_pipe(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn create_named_pipe(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     use nix::sys::stat;
     use nix::unistd;
     std::fs::remove_file(path).ok();
@@ -9,31 +42,78 @@ pub fn create_named_pipe(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-#[cfg(windows)]
-pub fn create_named_pipe(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null_mut;
-    use winapi::um::winbase::{CreateNamedPipeA, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT};
-    use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+pub fn create_channel_named_pipe<T, F>(
+    mut rx: Receiver<T>,
+    pipe_path: PathBuf,
+    mut chunk_fn: F,
+) -> OsString
+where
+    T: Send + 'static,
+    F: FnMut(&T) -> Option<&[u8]> + Send + 'static,
+{
+    #[cfg(windows)]
+    {
+        // Build proper Windows named pipe path, e.g. \\.\pipe\my_pipe_name
+        // Use the final filename from `pipe_path` to avoid conflicts
+        let filename = pipe_path
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("cap-default-pipe"));
+        let pipe_name = format!(r"\\.\pipe\{}", filename.to_string_lossy());
+        let os_pipe_name = OsString::from(&pipe_name);
 
-    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let path_narrow: Vec<i8> = path_wide.iter().map(|&c| c as i8).collect();
-    let handle = unsafe {
-        CreateNamedPipeA(
-            path_narrow.as_ptr(),
-            PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            1,
-            4096,
-            4096,
-            0,
-            null_mut(),
-        )
-    };
+        tokio::spawn(async move {
+            let mut server = tokio::net::windows::named_pipe::ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&pipe_name)
+                .expect("Failed to create named pipe");
 
-    if handle == INVALID_HANDLE_VALUE {
-        return Err("Failed to create named pipe".into());
+            // For each message from rx, repeatedly call chunk_fn until None is returned
+            while let Some(msg) = rx.recv().await {
+                loop {
+                    if let Some(bytes) = chunk_fn(&msg) {
+                        if let Err(e) = server.write_all(bytes).await {
+                            eprintln!("Error writing to named pipe: {e}");
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        });
+
+        return os_pipe_name;
     }
 
-    Ok(())
+    #[cfg(unix)]
+    {
+        use nix::sys::stat;
+        let os_pipe_name = pipe_path.clone().into_os_string();
+
+        let _ = std::fs::remove_file(&pipe_path);
+        // Make FIFO if not existing
+        nix::unistd::mkfifo(&pipe_path, stat::Mode::S_IRWXU)
+            .expect("Failed to create a Unix FIFO with mkfifo()");
+
+        tokio::spawn(async move {
+            let mut file = tokio::fs::File::create(&pipe_path)
+                .await
+                .expect("Failed to open FIFO for writing");
+
+            while let Some(msg) = rx.recv().await {
+                loop {
+                    if let Some(bytes) = chunk_fn(&msg) {
+                        if let Err(e) = file.write_all(bytes).await {
+                            eprintln!("Error writing to FIFO: {e}");
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        });
+
+        return os_pipe_name;
+    }
 }

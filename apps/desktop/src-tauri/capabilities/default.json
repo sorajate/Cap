@@ -13,20 +13,27 @@
     "core:window:allow-minimize",
     "core:window:allow-unminimize",
     "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
     "core:window:allow-set-size",
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
     "core:window:allow-set-position",
+    "core:window:allow-set-theme",
+    "core:window:allow-set-progress-bar",
+    "core:webview:default",
     "core:webview:allow-create-webview-window",
     "core:app:allow-version",
     "shell:default",
-    "fs:default",
-    "fs:read-files",
+    "core:image:default",
     "dialog:default",
     "store:default",
     "process:default",
     "oauth:allow-start",
     "updater:default",
-    "notification:default"
+    "notification:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "https://cap.so" }]
+    }
   ]
 }

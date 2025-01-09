@@ -27,13 +27,13 @@ export async function OPTIONS(req: NextRequest) {
           : "null",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, sentry-trace, baggage",
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization, sentry-trace, baggage",
     },
   });
 }
 
 export async function POST(req: NextRequest) {
-
   const token = req.headers.get("authorization")?.split(" ")[1];
   if (token) {
     cookies().set({
@@ -51,41 +51,43 @@ export async function POST(req: NextRequest) {
   const origin = params.get("origin") || null;
   const originalOrigin = req.nextUrl.origin;
 
-
   if (!user) {
-    return new Response(JSON.stringify({ error: "User not authenticated" }), {
-      status: 401,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin":
-          origin && allowedOrigins.includes(origin)
-            ? origin
-            : allowedOrigins.includes(originalOrigin)
-            ? originalOrigin
-            : "null",
-        "Access-Control-Allow-Credentials": "true",
-      },
-    });
+    return Response.json(
+      { error: "User not authenticated" },
+      {
+        status: 401,
+        headers: {
+          "Access-Control-Allow-Origin":
+            origin && allowedOrigins.includes(origin)
+              ? origin
+              : allowedOrigins.includes(originalOrigin)
+              ? originalOrigin
+              : "null",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
+    );
   }
 
   const formData = await req.formData();
   const feedbackText = formData.get("feedback") as string;
 
-
   if (!feedbackText) {
-    return new Response(JSON.stringify({ error: "Feedback text is required" }), {
-      status: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin":
-          origin && allowedOrigins.includes(origin)
-            ? origin
-            : allowedOrigins.includes(originalOrigin)
-            ? originalOrigin
-            : "null",
-        "Access-Control-Allow-Credentials": "true",
-      },
-    });
+    return Response.json(
+      { error: "Feedback text is required" },
+      {
+        status: 400,
+        headers: {
+          "Access-Control-Allow-Origin":
+            origin && allowedOrigins.includes(origin)
+              ? origin
+              : allowedOrigins.includes(originalOrigin)
+              ? originalOrigin
+              : "null",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
+    );
   }
 
   try {
@@ -96,9 +98,9 @@ export async function POST(req: NextRequest) {
     }
 
     const response = await fetch(discordWebhookUrl, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         content: `New feedback from ${user.email}:\n${feedbackText}`,
@@ -106,35 +108,44 @@ export async function POST(req: NextRequest) {
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to send feedback to Discord: ${response.statusText}`);
+      throw new Error(
+        `Failed to send feedback to Discord: ${response.statusText}`
+      );
     }
 
-    return new Response(JSON.stringify({ success: true, message: "Feedback submitted successfully" }), {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin":
-          origin && allowedOrigins.includes(origin)
-            ? origin
-            : allowedOrigins.includes(originalOrigin)
-            ? originalOrigin
-            : "null",
-        "Access-Control-Allow-Credentials": "true",
+    return Response.json(
+      {
+        success: true,
+        message: "Feedback submitted successfully",
       },
-    });
+      {
+        status: 200,
+        headers: {
+          "Access-Control-Allow-Origin":
+            origin && allowedOrigins.includes(origin)
+              ? origin
+              : allowedOrigins.includes(originalOrigin)
+              ? originalOrigin
+              : "null",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
+    );
   } catch (error) {
-    return new Response(JSON.stringify({ error: "Failed to submit feedback" }), {
-      status: 500,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin":
-          origin && allowedOrigins.includes(origin)
-            ? origin
-            : allowedOrigins.includes(originalOrigin)
-            ? originalOrigin
-            : "null",
-        "Access-Control-Allow-Credentials": "true",
-      },
-    });
+    return Response.json(
+      { error: "Failed to submit feedback" },
+      {
+        status: 500,
+        headers: {
+          "Access-Control-Allow-Origin":
+            origin && allowedOrigins.includes(origin)
+              ? origin
+              : allowedOrigins.includes(originalOrigin)
+              ? originalOrigin
+              : "null",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
+    );
   }
 }

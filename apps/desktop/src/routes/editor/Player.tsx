@@ -1,6 +1,7 @@
 import { DropdownMenu as KDropdownMenu } from "@kobalte/core/dropdown-menu";
 import { Select as KSelect } from "@kobalte/core/select";
 import { ToggleButton as KToggleButton } from "@kobalte/core/toggle-button";
+import { createEventListener } from "@solid-primitives/event-listener";
 import { createElementBounds } from "@solid-primitives/bounds";
 import { cx } from "cva";
 import { For, Show, Suspense, createEffect, createSignal } from "solid-js";
@@ -20,7 +21,6 @@ import {
   topLeftAnimateClasses,
 } from "./ui";
 import { formatTime } from "./utils";
-import { flags } from "~/flags";
 
 export function Player() {
   const {
@@ -28,19 +28,20 @@ export function Player() {
     videoId,
     editorInstance,
     history,
-    currentFrame,
+    latestFrame,
     setDialog,
     playbackTime,
+    setPlaybackTime,
     playing,
     setPlaying,
     split,
     setSplit,
   } = useEditorContext();
 
-  let canvasRef: HTMLCanvasElement;
+  let canvasRef!: HTMLCanvasElement;
 
   createEffect(() => {
-    const frame = currentFrame();
+    const frame = latestFrame();
     if (!frame) return;
     const ctx = canvasRef.getContext("2d");
     ctx?.putImageData(frame.data, 0, 0);
@@ -52,7 +53,7 @@ export function Player() {
 
   const splitButton = () => (
     <EditorButton<typeof KToggleButton>
-      disabled={flags.split}
+      disabled={!window.FLAGS.split}
       pressed={split()}
       onChange={setSplit}
       as={KToggleButton}
@@ -63,6 +64,52 @@ export function Player() {
     </EditorButton>
   );
 
+  const totalDuration = () =>
+    project.timeline?.segments.reduce(
+      (acc, s) => acc + (s.end - s.start) / s.timescale,
+      0
+    ) ?? editorInstance.recordingDuration;
+
+  const isAtEnd = () => {
+    const total = totalDuration();
+    return total > 0 && total - playbackTime() <= 0.1;
+  };
+
+  createEffect(() => {
+    if (isAtEnd() && playing()) {
+      commands.stopPlayback(videoId);
+      setPlaying(false);
+    }
+  });
+
+  const handlePlayPauseClick = async () => {
+    try {
+      if (isAtEnd()) {
+        await commands.stopPlayback(videoId);
+        setPlaybackTime(0);
+        await commands.seekTo(videoId, 0);
+        await commands.startPlayback(videoId);
+        setPlaying(true);
+      } else if (playing()) {
+        await commands.stopPlayback(videoId);
+        setPlaying(false);
+      } else {
+        await commands.startPlayback(videoId);
+        setPlaying(true);
+      }
+    } catch (error) {
+      console.error("Error handling play/pause:", error);
+      setPlaying(false);
+    }
+  };
+
+  createEventListener(document, "keydown", async (e: KeyboardEvent) => {
+    if (e.code === "Space" && e.target === document.body) {
+      e.preventDefault();
+      await handlePlayPauseClick();
+    }
+  });
+
   return (
     <div class="flex flex-col divide-y flex-1">
       <div class="flex flex-row justify-between font-medium p-[0.75rem] text-[0.875rem] z-10 bg-gray-50">
@@ -71,7 +118,7 @@ export function Player() {
           <EditorButton
             leftIcon={<IconCapCrop />}
             onClick={() => {
-              const display = editorInstance.recordings.display;
+              const display = editorInstance.recordings.segments[0].display;
               setDialog({
                 open: true,
                 type: "crop",
@@ -109,7 +156,7 @@ export function Player() {
         </div>
       </div>
       <div ref={setCanvasContainerRef} class="bg-gray-100 flex-1 relative">
-        <Show when={currentFrame()}>
+        <Show when={latestFrame()}>
           {(currentFrame) => {
             const padding = 16;
 
@@ -125,7 +172,7 @@ export function Player() {
             };
 
             const frameAspect = () =>
-              currentFrame().width / currentFrame().height;
+              currentFrame().width / currentFrame().data.height;
 
             const size = () => {
               if (frameAspect() < containerAspect()) {
@@ -160,11 +207,10 @@ export function Player() {
                   height: `${size().height}px`,
                 }}
                 class="bg-blue-50 absolute rounded"
-                // biome-ignore lint/style/noNonNullAssertion: ref
-                ref={canvasRef!}
+                ref={canvasRef}
                 id="canvas"
                 width={currentFrame().width}
-                height={currentFrame().height}
+                height={currentFrame().data.height}
               />
             );
           }}
@@ -177,39 +223,24 @@ export function Player() {
           <button type="button" disabled>
             <IconCapFrameFirst class="size-[1.2rem]" />
           </button>
-          {!playing() ? (
-            <button
-              type="button"
-              onClick={() =>
-                commands.startPlayback(videoId).then(() => setPlaying(true))
-              }
-            >
+          <button
+            type="button"
+            onClick={handlePlayPauseClick}
+            class="hover:text-black transition-colors"
+          >
+            {!playing() || isAtEnd() ? (
               <IconCapPlayCircle class="size-[1.5rem]" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() =>
-                commands.stopPlayback(videoId).then(() => setPlaying(false))
-              }
-            >
+            ) : (
               <IconCapStopCircle class="size-[1.5rem]" />
-            </button>
-          )}
+            )}
+          </button>
           <button type="button" disabled>
             <IconCapFrameLast class="size-[1rem]" />
           </button>
-          <span>
-            {formatTime(
-              project.timeline?.segments.reduce(
-                (acc, s) => acc + (s.end - s.start) / s.timescale,
-                0
-              ) ?? editorInstance.recordingDuration
-            )}
-          </span>
+          <span>{formatTime(totalDuration())}</span>
         </div>
         <div class="flex-1 flex flex-row justify-end">
-          {flags.split ? (
+          {window.FLAGS.split ? (
             splitButton()
           ) : (
             <ComingSoonTooltip>{splitButton()}</ComingSoonTooltip>
@@ -345,7 +376,7 @@ function PresetsDropdown() {
                         </Show>
                         <button
                           type="button"
-                          class="text-gray-400 hover:text-black"
+                          class="text-gray-400 hover:text-[currentColor]"
                           onClick={(e) => {
                             e.stopPropagation();
                             setShowSettings((s) => !s);

@@ -1,3 +1,5 @@
+import { commands } from "./tauri";
+
 const planIds = {
   development: {
     yearly: "price_1Q3esrFJxA1XpeSsFwp486RN",
@@ -10,7 +12,10 @@ const planIds = {
 };
 
 export const getProPlanId = (billingCycle: "yearly" | "monthly") => {
-  const environment = import.meta.env.VITE_ENVIRONMENT === "development" ? "development" : "production";
+  const environment =
+    import.meta.env.VITE_ENVIRONMENT === "development"
+      ? "development"
+      : "production";
   return planIds[environment]?.[billingCycle] || "";
 };
 
@@ -30,3 +35,10 @@ export const isUserOnProPlan = ({
 
   return false;
 };
+
+export const checkIsUpgradedAndUpdate = () => commands
+    .checkUpgradedAndUpdate()
+    .catch((e) => {
+      console.error("Failed to check plan: ", e);
+      return false;
+    });

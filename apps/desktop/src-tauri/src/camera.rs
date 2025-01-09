@@ -1,187 +1,87 @@
-use ffmpeg_next as ffmpeg;
-use serde::Serialize;
-use specta::Type;
-use std::{
-    path::PathBuf,
-    time::{Instant, SystemTime},
-};
-use tokio::sync::{oneshot, watch};
+use std::{pin::pin, sync::Arc, task::Poll};
 
-use tauri::{AppHandle, Manager, WebviewUrl};
+use futures::{FutureExt, SinkExt, StreamExt};
 
-use crate::{
-    capture::CaptureController,
-    encoder::{uyvy422_frame, H264Encoder},
-};
+// TODO: Possibly replace this with ffmpeg's network outputs in the pipeline somehow?
+// pub async fn create_camera_ws(frame_rx: CameraFrameReceiver) -> u16 {
+//     use axum::{
+//         extract::{
+//             ws::{Message, WebSocket, WebSocketUpgrade},
+//             State,
+//         },
+//         response::IntoResponse,
+//         routing::get,
+//     };
+//     use tokio::sync::Mutex;
 
-pub const WINDOW_LABEL: &str = "camera";
-const CAMERA_ROUTE: &str = "/camera";
-const WINDOW_SIZE: f64 = 230.0 * 2.0;
+//     type RouterState = Arc<Mutex<CameraFrameReceiver>>;
 
-#[tauri::command(async)]
-#[specta::specta]
-pub fn create_camera_window(app: AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        window.set_focus().ok();
-    } else {
-        let monitor = app.primary_monitor().unwrap().unwrap();
+//     async fn ws_handler(
+//         ws: WebSocketUpgrade,
+//         State(state): State<RouterState>,
+//     ) -> impl IntoResponse {
+//         ws.on_upgrade(move |socket| handle_socket(socket, state))
+//     }
 
-        let window = tauri::webview::WebviewWindow::builder(
-            &app,
-            WINDOW_LABEL,
-            WebviewUrl::App(CAMERA_ROUTE.into()),
-        )
-        .title("Cap")
-        .maximized(false)
-        .resizable(false)
-        .shadow(false)
-        .fullscreen(false)
-        .decorations(false)
-        .always_on_top(true)
-        .content_protected(true)
-        .visible_on_all_workspaces(true)
-        .min_inner_size(WINDOW_SIZE, WINDOW_SIZE * 2.0)
-        .inner_size(WINDOW_SIZE, WINDOW_SIZE * 2.0)
-        .position(
-            100.0,
-            (monitor.size().height as f64) / monitor.scale_factor() - WINDOW_SIZE - 100.0,
-        )
-        .build()
-        .unwrap();
+//     async fn handle_socket(socket: WebSocket, state: RouterState) {
+//         let camera_rx = state.lock().await;
+//         println!("socket connection established");
+//         tracing::info!("Socket connection established");
+//         let now = std::time::Instant::now();
 
-        #[cfg(target_os = "macos")]
-        {
-            use tauri_plugin_decorum::WebviewWindowExt;
+//         let (mut socket_sink, mut socket_stream) = socket.split();
 
-            window.make_transparent().ok();
-        }
-    }
-}
+//         let mut stream = futures::stream::poll_fn(|cx| {
+//             if let Poll::Ready(_) = socket_stream.poll_next_unpin(cx) {
+//                 tracing::info!("Received message from socket");
+//                 return Poll::Ready(None);
+//             };
 
-#[tauri::command(async)]
-#[specta::specta]
-pub fn list_cameras() -> Vec<String> {
-    nokhwa::query(nokhwa::utils::ApiBackend::Auto)
-        .unwrap()
-        .into_iter()
-        .map(|i| i.human_name().to_string())
-        .collect()
-}
+//             camera_rx.recv_async().poll_unpin(cx).map(|v| Some(v))
+//         });
 
-pub fn find_camera_by_label(label: &str) -> Option<nokhwa::utils::CameraInfo> {
-    nokhwa::query(nokhwa::utils::ApiBackend::Auto)
-        .unwrap()
-        .into_iter()
-        .find(|c| &c.human_name() == label)
-}
+//         while let Some(incoming_frame) = stream.next().await {
+//             match incoming_frame {
+//                 Ok(mut frame) => {
+//                     frame
+//                         .data
+//                         .extend_from_slice(&(frame.width * 4).to_le_bytes());
+//                     frame.data.extend_from_slice(&frame.height.to_le_bytes());
+//                     frame.data.extend_from_slice(&frame.width.to_le_bytes());
 
-#[derive(Serialize, Type)]
-pub struct CameraInfo {
-    pub human_name: String,
-    pub description: String,
-}
+//                     tracing::info!("Received frame from camera");
+//                     if let Err(e) = socket_sink.send(Message::Binary(frame.data)).await {
+//                         tracing::error!("Failed to send frame to socket: {:?}", e);
+//                         break;
+//                     }
+//                 }
+//                 Err(e) => {
+//                     tracing::warn!(
+//                         "Connection has been lost! Shutting down camera server: {:?}",
+//                         e
+//                     );
+//                     break;
+//                 }
+//             }
+//         }
 
-// ffmpeg
-//     .command
-//     .args(["-f", "mp4", "-map", &format!("{}:v", ffmpeg_input.index)])
-//     .args(["-codec:v", "libx264", "-preset", "ultrafast"])
-//     .args(["-pix_fmt", "yuv420p", "-tune", "zerolatency"])
-//     .args(["-vsync", "1", "-force_key_frames", "expr:gte(t,n_forced*3)"])
-//     .args(["-movflags", "frag_keyframe+empty_moov"])
-//     .args(["-g", &keyframe_interval_str])
-//     .args(["-keyint_min", &keyframe_interval_str])
-//     .args([
-//         "-vf",
-//         &format!(
-//             "fps={},scale=in_range=full:out_range=limited",
-//             ffmpeg_input.fps
-//         ),
-//     ])
-//     .arg(&output_path);
+//         let elapsed = now.elapsed();
+//         println!("Websocket closing after {elapsed:.2?}");
+//         tracing::info!("Websocket closing after {elapsed:.2?}");
+//     }
 
-pub async fn start_capturing(
-    output_path: PathBuf,
-    camera_info: nokhwa::utils::CameraInfo,
-    mut start_writing_rx: watch::Receiver<bool>,
-) -> CaptureController {
-    let controller = CaptureController::new(output_path);
+//     let router = axum::Router::new()
+//         .route("/", get(ws_handler))
+//         .with_state(Arc::new(Mutex::new(frame_rx)));
 
-    let (start_tx, start_rx) = oneshot::channel();
+//     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+//     let port = listener.local_addr().unwrap().port();
+//     tracing::info!("WebSocket server listening on port {}", port);
+//     tokio::spawn(async move {
+//         axum::serve(listener, router.into_make_service())
+//             .await
+//             .unwrap();
+//     });
 
-    std::thread::spawn({
-        let controller = controller.clone();
-        move || {
-            use nokhwa::{pixel_format::*, utils::*, *};
-
-            nokhwa::nokhwa_initialize(move |granted| {
-                if granted {
-                    println!("Camera access granted");
-                } else {
-                    println!("Camera access denied");
-                }
-            });
-
-            let format =
-                RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
-            let mut camera = Camera::new(camera_info.index().clone(), format).unwrap();
-
-            let format = camera.camera_format();
-
-            let capture_format = ffmpeg::format::Pixel::UYVY422;
-            let output_format = H264Encoder::output_format();
-
-            let (width, height) = (format.resolution().width(), format.resolution().height());
-
-            let mut encoder = H264Encoder::new(&controller.output_path, width, height, 30.0);
-
-            let mut scaler =
-                ffmpeg::software::converter((width, height), capture_format, output_format)
-                    .unwrap();
-
-            camera.open_stream().unwrap();
-
-            let mut start_tx = Some(start_tx);
-
-            loop {
-                if controller.is_stopped() {
-                    println!("Stopping receiving camera frames");
-                    break;
-                }
-
-                let frame = camera.frame().unwrap();
-                let timestamp = SystemTime::now();
-
-                if controller.is_paused() {
-                    continue;
-                }
-
-                if let Some(start_tx) = start_tx.take() {
-                    start_tx.send(Instant::now()).unwrap();
-                }
-
-                if !*start_writing_rx.borrow_and_update() {
-                    continue;
-                }
-
-                let yuyv422_frame = uyvy422_frame(frame.buffer(), width, height);
-
-                let mut yuv_frame = ffmpeg::util::frame::Video::empty();
-                scaler.run(&yuyv422_frame, &mut yuv_frame).unwrap();
-
-                encoder.encode_frame(
-                    yuv_frame,
-                    timestamp
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64,
-                );
-            }
-
-            encoder.close();
-        }
-    });
-
-    start_rx.await.unwrap(); // wait for first frame
-
-    controller
-}
+//     port
+// }

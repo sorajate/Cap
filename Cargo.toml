@@ -1,13 +1,40 @@
 [workspace]
 resolver = "2"
-members = [
-	"apps/desktop/src-tauri",
-	"crates/rendering",
-	"crates/ffmpeg",
-	"crates/utils",
-	"crates/project",
-]
+members = [ "apps/cli","apps/desktop/src-tauri", "crates/*"]
 
 [workspace.dependencies]
-ffmpeg-next = { git = "https://github.com/CapSoftware/rust-ffmpeg", rev = "11f8d264bbc0" }
-tauri = { version = "2.0.0-rc" }
+anyhow = "1.0.86"
+# This includes a currently-unreleased fix that ensures the audio stream is actually
+# stopped and released on drop on macOS
+cpal = { git = "https://github.com/RustAudio/cpal", rev = "f43d36e55494993bbbde3299af0c53e5cdf4d4cf" }
+ffmpeg = { package = "ffmpeg-next", git = "https://github.com/CapSoftware/rust-ffmpeg", rev = "91b29d09a8c7cb4f5659c38f1f0924b980a30cba" }
+ffmpeg-sys-next = "7.1.0"
+tokio = { version = "1.39.3", features = [
+	"macros",
+	"process",
+	"fs",
+	"sync",
+	"rt",
+	"rt-multi-thread",
+	"time",
+] }
+tauri = { version = "2.1.1" }
+specta = { version = "=2.0.0-rc.20" }
+scap = { git = "https://github.com/CapSoftware/scap", rev = "58d4410bf52f" }
+nokhwa = { git = "https://github.com/CapSoftware/nokhwa", rev = "0d3d1f30a78b", features = [
+	"input-native",
+	"serialize",
+] }
+nokhwa-bindings-macos = { git = "https://github.com/CapSoftware/nokhwa", rev = "0d3d1f30a78b" }
+wgpu = "22.1.0"
+flume = "0.11.0"
+thiserror = "1.0"
+sentry = { version = "0.34.0", features = [
+	"anyhow",
+	"backtrace",
+	"debug-images",
+] }
+
+windows = "0.58.0"
+windows-sys = "0.59.0"
+windows-capture = "=1.3.6"

@@ -17,6 +17,7 @@ import { getProPlanId } from "@cap/utils";
 import toast from "react-hot-toast";
 import { useRouter, useSearchParams } from "next/navigation";
 import { SimplePlans } from "../text/SimplePlans";
+import { LogoSection } from "./_components/LogoSection";
 
 export const PricingPage = () => {
   const [loading, setLoading] = useState(false);
@@ -50,7 +51,9 @@ export const PricingPage = () => {
     const data = await response.json();
 
     if (data.auth === false) {
-      push(`/login?next=/pricing?plan=${planId}`);
+      localStorage.setItem("pendingPriceId", planId);
+      push(`/login?next=/pricing`);
+      return;
     }
 
     if (data.subscription === true) {
@@ -128,7 +131,7 @@ export const PricingPage = () => {
 
   return (
     <div>
-      <div className="wrapper wrapper-sm py-20 space-y-24">
+      <div className="wrapper py-12 space-y-24">
         <div className="space-y-12">
           <div className="text-center">
             <div className={`mb-4 ${initialRender ? "fade-in-down" : ""}`}>
@@ -151,9 +154,119 @@ export const PricingPage = () => {
               for the lifetime of your subscription.
             </p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+          <div>
+            <div className="text-center max-w-[800px] mx-auto mb-8 lg:mb-4">
+              <h2 className="text-xl text-gray-400">
+                Used by employees at leading tech companies
+              </h2>
+            </div>
+            <div className="flex flex-col items-center text-center lg:flex-row lg:items-center lg:justify-between lg:text-left pb-8 lg:pb-0">
+              <div className="grid grid-cols-2 gap-10 md:grid-cols-5 lg:max-w-4xl lg:gap-10 mx-auto">
+                <div className="flex items-center justify-center lg:mt-0 ">
+                  <img
+                    alt="Tesla Logo"
+                    loading="lazy"
+                    width={100}
+                    height={30}
+                    decoding="async"
+                    style={{ color: "transparent" }}
+                    src="/logos/tesla.svg"
+                  />
+                </div>
+                <div className="flex items-center justify-center lg:mt-0 ">
+                  <img
+                    alt="Microsoft Logo"
+                    loading="lazy"
+                    width={98}
+                    height={24}
+                    decoding="async"
+                    style={{ color: "transparent" }}
+                    src="/logos/microsoft.svg"
+                  />
+                </div>
+                <div className="flex items-center justify-center lg:mt-0 ">
+                  <img
+                    alt="Coinbase Logo"
+                    loading="lazy"
+                    width={139}
+                    height={32}
+                    decoding="async"
+                    style={{ color: "transparent" }}
+                    src="/logos/coinbase.svg"
+                  />
+                </div>
+                <div className="flex items-center justify-center lg:mt-0 ">
+                  <img
+                    alt="IBM Logo"
+                    loading="lazy"
+                    width={80}
+                    height={20}
+                    decoding="async"
+                    style={{ color: "transparent" }}
+                    src="/logos/ibm.svg"
+                  />
+                </div>
+                <div className="flex items-center justify-center lg:mt-0 ">
+                  <img
+                    alt="Dropbox Logo"
+                    loading="lazy"
+                    width={115}
+                    height={50}
+                    decoding="async"
+                    style={{ color: "transparent" }}
+                    src="/logos/dropbox.svg"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-stretch">
             <Card
-              className={`bg-blue-300 p-3 md:p-8 rounded-xl min-h-[600px] flex-grow border-blue-500/20 ${
+              className={`bg-gray-100 rounded-xl min-h-[600px] flex-grow ${
+                initialRender ? "fade-in-down animate-delay-2" : ""
+              }`}
+            >
+              <div className="space-y-4">
+                <CardHeader>
+                  <CardTitle className="text-2xl">
+                    Cap Lite (Open Source)
+                  </CardTitle>
+                  <CardDescription className="text-lg">
+                    For personal and minimal use.
+                  </CardDescription>
+                  <h3 className="text-4xl">Free</h3>
+                </CardHeader>
+                <CardContent>
+                  <Button
+                    href="/download"
+                    className="w-full hover:bg-gray-200"
+                    variant="white"
+                    size="lg"
+                  >
+                    Try for Free
+                  </Button>
+                </CardContent>
+                <CardFooter>
+                  <div className="space-y-2">
+                    <div className="flex items-center">
+                      <div className="w-5 h-5 m-0 p-0 flex items-center border-[2px] border-gray-500 justify-center rounded-full">
+                        <Check className="w-3 h-3 stroke-[4px] stroke-gray-500" />
+                      </div>
+                      <p className="ml-1.5 text-gray-500">
+                        Core features, including:
+                      </p>
+                    </div>
+                    <p className="pl-8">
+                      Screen & Window recording, Local video export, Powerful
+                      video editor (custom background gradients, transitions,
+                      etc) + many more.
+                    </p>
+                  </div>
+                </CardFooter>
+              </div>
+            </Card>
+            <Card
+              className={`bg-blue-300 rounded-xl min-h-[600px] flex-grow border-blue-500/20 ${
                 initialRender ? "fade-in-up animate-delay-2" : ""
               }`}
             >
@@ -164,7 +277,7 @@ export const PricingPage = () => {
                     For professional use and teams.
                   </CardDescription>
                   <div>
-                    <div className="flex items-center space-x-3">
+                    <div>
                       <h3 className="text-4xl text-white">
                         {isAnnual ? "$6/mo" : "$9/mo"}
                       </h3>
@@ -213,10 +326,10 @@ export const PricingPage = () => {
                             key={index}
                             className="flex items-center justify-start"
                           >
-                            <div className="w-6 h-6 m-0 p-0 flex items-center border-[2px] border-white justify-center rounded-full">
+                            <div className="w-5 h-5 m-0 p-0 flex items-center border-[2px] border-white justify-center rounded-full">
                               <Check className="w-3 h-3 stroke-[4px] stroke-white" />
                             </div>
-                            <span className="ml-2 text-lg text-white">
+                            <span className="ml-1.5 text-white">
                               {item.text}
                             </span>
                           </li>
@@ -228,45 +341,73 @@ export const PricingPage = () => {
               </div>
             </Card>
             <Card
-              className={`bg-white p-3 md:p-8 rounded-xl min-h-[600px] flex-grow ${
+              className={`bg-gray-900 text-white rounded-xl min-h-[600px] flex-grow ${
                 initialRender ? "fade-in-down animate-delay-2" : ""
               }`}
             >
               <div className="space-y-4">
                 <CardHeader>
-                  <CardTitle className="text-2xl">
-                    Cap Lite (Open Source)
-                  </CardTitle>
-                  <CardDescription className="text-lg">
-                    For personal and minimal use.
+                  <CardTitle className="text-3xl">Custom</CardTitle>
+                  <CardDescription className="text-white/80">
+                    For teams and organizations who prioritize security.
                   </CardDescription>
-                  <h3 className="text-4xl">Free</h3>
                 </CardHeader>
                 <CardContent>
                   <Button
-                    href="/download"
-                    className="w-full bg-gray-100 hover:bg-gray-200"
+                    href="https://cap.link/sales"
+                    className="w-full"
                     variant="white"
                     size="lg"
                   >
-                    Try for Free
+                    Schedule a Demo
                   </Button>
                 </CardContent>
                 <CardFooter>
-                  <div className="space-y-2">
-                    <div className="flex items-center">
-                      <div className="w-6 h-6 m-0 p-0 flex items-center border-[2px] border-gray-500 justify-center rounded-full">
-                        <Check className="w-3 h-3 stroke-[4px] stroke-gray-500" />
-                      </div>
-                      <p className="ml-2 text-gray-500">
-                        Core features, including:
-                      </p>
+                  <div className="space-y-8">
+                    <div>
+                      <ul className="list-none p-0 space-y-3">
+                        <li className="flex items-center justify-start">
+                          <div className="w-5 h-5 m-0 p-0 flex items-center border-[2px] border-white justify-center rounded-full">
+                            <Check className="w-3 h-3 stroke-[4px] stroke-white" />
+                          </div>
+                          <span className="ml-1.5 text-white">
+                            Everything in Pro
+                          </span>
+                        </li>
+                        <li className="flex items-center justify-start">
+                          <div className="w-5 h-5 m-0 p-0 flex items-center border-[2px] border-white justify-center rounded-full">
+                            <Check className="w-3 h-3 stroke-[4px] stroke-white" />
+                          </div>
+                          <span className="ml-1.5 text-white">
+                            Custom deployment options
+                          </span>
+                        </li>
+                        <li className="flex items-center justify-start">
+                          <div className="w-5 h-5 m-0 p-0 flex items-center border-[2px] border-white justify-center rounded-full">
+                            <Check className="w-3 h-3 stroke-[4px] stroke-white" />
+                          </div>
+                          <span className="ml-1.5 text-white">
+                            Dedicated support
+                          </span>
+                        </li>
+                        <li className="flex items-center justify-start">
+                          <div className="w-5 h-5 m-0 p-0 flex items-center border-[2px] border-white justify-center rounded-full">
+                            <Check className="w-3 h-3 stroke-[4px] stroke-white" />
+                          </div>
+                          <span className="ml-1.5 text-white">
+                            SLA guarantees
+                          </span>
+                        </li>
+                        <li className="flex items-center justify-start">
+                          <div className="w-5 h-5 m-0 p-0 flex items-center border-[2px] border-white justify-center rounded-full">
+                            <Check className="w-3 h-3 stroke-[4px] stroke-white" />
+                          </div>
+                          <span className="ml-1.5 text-white">
+                            Custom integrations
+                          </span>
+                        </li>
+                      </ul>
                     </div>
-                    <p className="pl-8">
-                      Screen & Window recording, Local video export, Powerful
-                      video editor (custom background gradients, transitions,
-                      etc) + many more.
-                    </p>
                   </div>
                 </CardFooter>
               </div>

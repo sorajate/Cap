@@ -1,82 +1,69 @@
 mod configuration;
-
-use std::path::PathBuf;
+mod cursor;
+mod meta;
 
 pub use configuration::*;
+pub use cursor::*;
+pub use meta::*;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use tauri::AppHandle;
+use tauri_plugin_store::StoreExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct Display {
-    pub path: PathBuf,
+#[serde(rename_all = "camelCase")]
+pub struct RecordingConfig {
+    pub fps: u32,
+    pub resolution: Resolution,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct CameraMeta {
-    pub path: PathBuf,
+pub struct Resolution {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for RecordingConfig {
+    fn default() -> Self {
+        Self {
+            fps: 30,
+            resolution: Resolution {
+                width: 1920,
+                height: 1080,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct AudioMeta {
-    pub path: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct SharingMeta {
-    pub id: String,
-    pub link: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct RecordingSegment {
-    pub start: f64,
-    pub end: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct RecordingMeta {
-    // this field is just for convenience, it shouldn't be persisted
-    #[serde(skip_serializing, default)]
-    pub project_path: PathBuf,
-    pub pretty_name: String,
+pub struct GeneralSettingsStore {
     #[serde(default)]
-    pub sharing: Option<SharingMeta>,
-    pub display: Display,
-    #[serde(default)]
-    pub camera: Option<CameraMeta>,
-    #[serde(default)]
-    pub audio: Option<AudioMeta>,
-    #[serde(default)]
-    pub segments: Vec<RecordingSegment>,
+    pub recording_config: Option<RecordingConfig>,
 }
 
-impl RecordingMeta {
-    pub fn load_for_project(project_path: &PathBuf) -> Result<Self, String> {
-        let meta_path = project_path.join("recording-meta.json");
-        let meta = match std::fs::read_to_string(&meta_path) {
-            Ok(content) => content,
-            Err(_) => {
-                return Ok(Self {
-                    project_path: project_path.clone(),
-                    pretty_name: String::new(),
-                    sharing: None,
-                    display: Display {
-                        path: PathBuf::new(),
-                    },
-                    camera: None,
-                    audio: None,
-                    segments: Vec::new(),
-                });
-            }
-        };
-        let mut meta: Self = serde_json::from_str(&meta).map_err(|e| e.to_string())?;
-        meta.project_path = project_path.clone();
-        Ok(meta)
+impl GeneralSettingsStore {
+    pub fn get(app: &AppHandle) -> Result<Option<Self>, String> {
+        match app.get_store("store").map(|s| s.get("general_settings")) {
+            Some(Some(store)) => match serde_json::from_value(store) {
+                Ok(settings) => Ok(Some(settings)),
+                Err(_) => Ok(Some(GeneralSettingsStore::default())),
+            },
+            _ => Ok(None),
+        }
     }
 
-    pub fn save_for_project(&self) {
-        let meta_path = &self.project_path.join("recording-meta.json");
-        let meta = serde_json::to_string_pretty(&self).unwrap();
-        std::fs::write(meta_path, meta).unwrap();
+    pub fn save(&self, app: &AppHandle) -> Result<(), String> {
+        let store = app.get_store("store").ok_or("Store not found")?;
+        store.set("general_settings", serde_json::json!(self));
+        store.save().map_err(|e| e.to_string())
+    }
+}
+
+impl Default for GeneralSettingsStore {
+    fn default() -> Self {
+        Self {
+            recording_config: Some(RecordingConfig::default()),
+        }
     }
 }

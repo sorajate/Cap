@@ -1,5 +1,3 @@
-import million from "million/compiler";
-
 /** @type {import('next').NextConfig} */
 
 import("dotenv").then(({ config }) => config({ path: "../../.env" }));
@@ -21,7 +19,7 @@ const { version } = packageJson;
 const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
-  transpilePackages: ["@cap/ui", "@cap/utils"],
+  transpilePackages: ["@cap/ui", "@cap/utils", "@cap/web-api-contract"],
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -29,7 +27,7 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   experimental: {
-    optimizePackageImports: ["@cap/ui", "@cap/utils"],
+    optimizePackageImports: ["@cap/ui", "@cap/utils", "@cap/web-api-contract"],
     serverComponentsExternalPackages: [
       "@react-email/components",
       "@react-email/render",
@@ -40,25 +38,7 @@ const nextConfig = {
     remotePatterns: [
       {
         protocol: "https",
-        hostname: "*.amazonaws.com",
-        port: "",
-        pathname: "**",
-      },
-      {
-        protocol: "https",
-        hostname: "*.cloudfront.net",
-        port: "",
-        pathname: "**",
-      },
-      {
-        protocol: "https",
-        hostname: "*v.cap.so",
-        port: "",
-        pathname: "**",
-      },
-      {
-        protocol: "https",
-        hostname: "*tasks.cap.so",
+        hostname: "**",
         port: "",
         pathname: "**",
       },
@@ -80,6 +60,21 @@ const nextConfig = {
           "https://capso.notion.site/7aac740edeee49b5a23be901a7cb734e?v=9d4a3bf3d72d488cad9b899ab73116a1",
         permanent: true,
       },
+      {
+        source: "/updates",
+        destination: "/blog",
+        permanent: true,
+      },
+      {
+        source: "/updates/:slug",
+        destination: "/blog/:slug",
+        permanent: true,
+      },
+      {
+        source: "/docs/s3-config",
+        destination: "/docs",
+        permanent: true,
+      },
     ];
   },
   env: {
@@ -87,18 +82,4 @@ const nextConfig = {
   },
 };
 
-const millionConfig = {
-  auto: {
-    rsc: true,
-    skip: [
-      "Parallax",
-      "Toolbar",
-      "react-scroll-parallax",
-      "Record",
-      "ActionButton",
-      "ImageViewer",
-    ],
-  },
-};
-
-export default million.next(nextConfig, millionConfig);
+export default nextConfig;
