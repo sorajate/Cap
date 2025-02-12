@@ -16,6 +16,7 @@ dist-ssr
 .env.development
 .env.test
 target
+.cursorrules
 
 # Editor directories and files
 .vscode/*
@@ -32,4 +33,8 @@ pnpm-lock.yaml
 .zed
 .output
 .vinxi
-native-deps
+native-deps*
+apps/storybook/storybook-static
+tauri.*.conf.json
+
+*.tsbuildinfo

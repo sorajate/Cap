@@ -62,8 +62,10 @@ export const Toolbar = ({
     console.log("videoElement", videoElement.currentTime);
     const timestamp = videoElement ? videoElement.currentTime : 0;
 
+    console.log("timestamp", timestamp);
+
     const response = await fetch(
-      `${process.env.NEXT_PUBLIC_URL}/api/video/comment`,
+      `${process.env.NEXT_PUBLIC_WEB_URL}/api/video/comment`,
       {
         method: "POST",
         headers: {
@@ -180,7 +182,7 @@ export const Toolbar = ({
                   <Button
                     className="min-w-[160px]"
                     disabled={comment.length === 0}
-                    variant="default"
+                    variant="primary"
                     size="sm"
                     onClick={() => {
                       handleCommentSubmit();
@@ -190,7 +192,7 @@ export const Toolbar = ({
                   </Button>
                   <Button
                     className="min-w-[100px]"
-                    variant="outline"
+                    variant="secondary"
                     size="sm"
                     onClick={() => {
                       setCommentBoxOpen(false);

@@ -27,6 +27,19 @@ const nanoIdNullable = customType<{ data: string; notNull: false }>({
   },
 });
 
+// Add a custom type for encrypted strings
+const encryptedText = customType<{ data: string; notNull: true }>({
+  dataType() {
+    return "text";
+  },
+});
+
+const encryptedTextNullable = customType<{ data: string; notNull: false }>({
+  dataType() {
+    return "text";
+  },
+});
+
 export const users = mysqlTable(
   "users",
   {
@@ -40,6 +53,9 @@ export const users = mysqlTable(
     stripeSubscriptionId: varchar("stripeSubscriptionId", {
       length: 255,
     }),
+    thirdPartyStripeSubscriptionId: varchar("thirdPartyStripeSubscriptionId", {
+      length: 255,
+    }),
     stripeSubscriptionStatus: varchar("stripeSubscriptionStatus", {
       length: 255,
     }),
@@ -50,7 +66,8 @@ export const users = mysqlTable(
     created_at: timestamp("created_at").notNull().defaultNow(),
     updated_at: timestamp("updated_at").notNull().defaultNow().onUpdateNow(),
     onboarding_completed_at: timestamp("onboarding_completed_at"),
-    customBucket: nanoId("customBucket"),
+    customBucket: nanoIdNullable("customBucket"),
+    inviteQuota: int("inviteQuota").notNull().default(1),
   },
   (table) => ({
     emailIndex: uniqueIndex("email_idx").on(table.email),
@@ -115,11 +132,17 @@ export const spaces = mysqlTable(
     name: varchar("name", { length: 255 }).notNull(),
     ownerId: nanoId("ownerId").notNull(),
     metadata: json("metadata"),
+    allowedEmailDomain: varchar("allowedEmailDomain", { length: 255 }),
+    customDomain: varchar("customDomain", { length: 255 }),
+    domainVerified: timestamp("domainVerified"),
     createdAt: timestamp("createdAt").notNull().defaultNow(),
     updatedAt: timestamp("updatedAt").notNull().defaultNow().onUpdateNow(),
+    workosOrganizationId: varchar("workosOrganizationId", { length: 255 }),
+    workosConnectionId: varchar("workosConnectionId", { length: 255 }),
   },
   (table) => ({
     ownerIdIndex: index("owner_id_idx").on(table.ownerId),
+    customDomainIndex: index("custom_domain_idx").on(table.customDomain),
   })
 );
 
@@ -140,6 +163,29 @@ export const spaceMembers = mysqlTable(
       table.userId,
       table.spaceId
     ),
+  })
+);
+
+export const spaceInvites = mysqlTable(
+  "space_invites",
+  {
+    id: nanoId("id").notNull().primaryKey().unique(),
+    spaceId: nanoId("spaceId").notNull(),
+    invitedEmail: varchar("invitedEmail", { length: 255 }).notNull(),
+    invitedByUserId: nanoId("invitedByUserId").notNull(),
+    role: varchar("role", { length: 255 }).notNull(),
+    status: varchar("status", { length: 255 }).notNull().default("pending"),
+    createdAt: timestamp("createdAt").notNull().defaultNow(),
+    updatedAt: timestamp("updatedAt").notNull().defaultNow().onUpdateNow(),
+    expiresAt: timestamp("expiresAt"),
+  },
+  (table) => ({
+    spaceIdIndex: index("space_id_idx").on(table.spaceId),
+    invitedEmailIndex: index("invited_email_idx").on(table.invitedEmail),
+    invitedByUserIdIndex: index("invited_by_user_id_idx").on(
+      table.invitedByUserId
+    ),
+    statusIndex: index("status_idx").on(table.status),
   })
 );
 
@@ -225,11 +271,13 @@ export const comments = mysqlTable(
 export const s3Buckets = mysqlTable("s3_buckets", {
   id: nanoId("id").notNull().primaryKey().unique(),
   ownerId: nanoId("ownerId").notNull(),
-  region: varchar("region", { length: 255 }).notNull(),
-  endpoint: text("endpoint"),
-  bucketName: varchar("bucketName", { length: 255 }).notNull(),
-  accessKeyId: varchar("accessKeyId", { length: 255 }).notNull(),
-  secretAccessKey: varchar("secretAccessKey", { length: 255 }).notNull(),
+  // Use encryptedText for sensitive fields
+  region: encryptedText("region").notNull(),
+  endpoint: encryptedTextNullable("endpoint"),
+  bucketName: encryptedText("bucketName").notNull(),
+  accessKeyId: encryptedText("accessKeyId").notNull(),
+  secretAccessKey: encryptedText("secretAccessKey").notNull(),
+  provider: text("provider").notNull().default("aws"),
 });
 
 export const commentsRelations = relations(comments, ({ one }) => ({
@@ -271,6 +319,7 @@ export const spacesRelations = relations(spaces, ({ one, many }) => ({
   }),
   spaceMembers: many(spaceMembers),
   sharedVideos: many(sharedVideos),
+  spaceInvites: many(spaceInvites),
 }));
 
 export const sessionsRelations = relations(sessions, ({ one }) => ({
@@ -295,6 +344,17 @@ export const spaceMembersRelations = relations(spaceMembers, ({ one }) => ({
   space: one(spaces, {
     fields: [spaceMembers.spaceId],
     references: [spaces.id],
+  }),
+}));
+
+export const spaceInvitesRelations = relations(spaceInvites, ({ one }) => ({
+  space: one(spaces, {
+    fields: [spaceInvites.spaceId],
+    references: [spaces.id],
+  }),
+  invitedByUser: one(users, {
+    fields: [spaceInvites.invitedByUserId],
+    references: [users.id],
   }),
 }));
 

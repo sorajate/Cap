@@ -3,25 +3,29 @@ import { trackDeep } from "@solid-primitives/deep";
 import { throttle } from "@solid-primitives/scheduled";
 import { useSearchParams } from "@solidjs/router";
 import {
-  For,
   Match,
   Show,
   Switch,
-  batch,
   createEffect,
   createMemo,
-  createRoot,
   createSignal,
   on,
   onMount,
+  untrack,
 } from "solid-js";
 import { createStore } from "solid-js/store";
 import { createMutation } from "@tanstack/solid-query";
-import { createEventListenerMap } from "@solid-primitives/event-listener";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
-import { events, commands } from "~/utils/tauri";
-import { EditorContextProvider, useEditorContext } from "./context";
+import { type Crop, events, commands } from "~/utils/tauri";
+import {
+  EditorContextProvider,
+  EditorInstanceContextProvider,
+  FPS,
+  OUTPUT_SIZE,
+  useEditorContext,
+  useEditorInstanceContext,
+} from "./context";
 import {
   Dialog,
   DialogContent,
@@ -30,14 +34,13 @@ import {
   Subfield,
   Toggle,
 } from "./ui";
-import {
-  EditorInstanceContextProvider,
-  useEditorInstanceContext,
-} from "./editorInstanceContext";
 import { Header } from "./Header";
 import { Player } from "./Player";
 import { ConfigSidebar } from "./ConfigSidebar";
 import { Timeline } from "./Timeline";
+import Cropper, { cropToFloor } from "~/components/Cropper";
+import { makePersisted } from "@solid-primitives/storage";
+import { Tooltip } from "@kobalte/core";
 
 export function Editor() {
   const [params] = useSearchParams<{ id: string }>();
@@ -71,26 +74,46 @@ export function Editor() {
 function Inner() {
   const {
     project,
-    videoId,
     playbackTime,
     setPlaybackTime,
     playing,
-    setPlaying,
     previewTime,
+    videoId,
   } = useEditorContext();
 
-  onMount(() => {
-    events.editorStateChanged.listen((e) => {
-      renderFrame.clear();
-      setPlaybackTime(e.payload.playhead_position / 30);
-    });
+  const [isLoading, setIsLoading] = createSignal(true);
+
+  onMount(async () => {
+    try {
+      // Initialize critical resources first
+      await Promise.all([
+        commands.createEditorInstance(videoId),
+        // Load initial project config
+      ]);
+
+      setIsLoading(false);
+
+      events.editorStateChanged.listen((e) => {
+        renderFrame.clear();
+        untrack(() => {
+          setPlaybackTime(e.payload.playhead_position / FPS);
+        });
+      });
+    } catch (error) {
+      console.error("Failed to initialize editor:", error);
+      setIsLoading(false);
+    }
   });
 
   const renderFrame = throttle((time: number) => {
-    events.renderFrameEvent.emit({
-      frame_number: Math.max(Math.floor(time * 30), 0),
-    });
-  }, 1000 / 60);
+    if (!playing()) {
+      events.renderFrameEvent.emit({
+        frame_number: Math.max(Math.floor(time * FPS), 0),
+        fps: FPS,
+        resolution_base: OUTPUT_SIZE,
+      });
+    }
+  }, 1000 / FPS);
 
   const frameNumberToRender = createMemo(() => {
     const preview = previewTime();
@@ -116,51 +139,35 @@ function Inner() {
     )
   );
 
-  const togglePlayback = async () => {
-    try {
-      if (playing()) {
-        await commands.stopPlayback(videoId);
-        setPlaying(false);
-      } else {
-        await commands.startPlayback(videoId);
-        setPlaying(true);
-      }
-    } catch (error) {
-      console.error("Error toggling playback:", error);
-      setPlaying(false);
-    }
-  };
-
-  createEffect(() => {
-    const handleKeyDown = async (e: KeyboardEvent) => {
-      if (e.code === "Space" && e.target === document.body) {
-        e.preventDefault();
-        await togglePlayback();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  });
-
   return (
-    <div
-      class="p-5 flex flex-col gap-4 w-screen h-screen divide-y bg-gray-50 rounded-lg leading-5 animate-in fade-in"
-      data-tauri-drag-region
-    >
-      <Header />
-      <div class="rounded-2xl overflow-hidden  shadow border flex-1 flex flex-col divide-y bg-white">
-        <div class="flex flex-row flex-1 divide-x overflow-y-hidden">
-          <Player />
-          <ConfigSidebar />
+    <Show
+      when={!isLoading()}
+      fallback={
+        <div class="w-screen h-screen flex items-center justify-center bg-gray-50">
+          <div class="flex flex-col items-center gap-4">
+            <div class="animate-spin rounded-full h-8 w-8 border-2 border-gray-300 border-t-blue-400" />
+            <span class="text-gray-500">Loading editor...</span>
+          </div>
         </div>
-        <Timeline />
+      }
+    >
+      <div class="w-screen h-screen flex flex-col">
+        <Header />
+        <div
+          class="p-5 pt-0 flex-1 w-full overflow-y-hidden flex flex-col gap-4 bg-gray-50 leading-5 animate-in fade-in"
+          data-tauri-drag-region
+        >
+          <div class="rounded-2xl overflow-hidden shadow border flex-1 flex flex-col divide-y bg-white">
+            <div class="flex flex-row flex-1 divide-x overflow-y-hidden">
+              <Player />
+              <ConfigSidebar />
+            </div>
+            <Timeline />
+          </div>
+          <Dialogs />
+        </div>
       </div>
-      <Dialogs />
-    </div>
+    </Show>
   );
 }
 
@@ -195,8 +202,9 @@ function Dialogs() {
                 });
 
                 const createPreset = createMutation(() => ({
-                  mutationFn: async () =>
-                    presets.createPreset({ ...form, config: project }),
+                  mutationFn: async () => {
+                    await presets.createPreset({ ...form, config: project });
+                  },
                   onSuccess: () => {
                     setDialog((d) => ({ ...d, open: false }));
                   },
@@ -299,9 +307,7 @@ function Dialogs() {
                     }
                   >
                     <p class="text-gray-400">
-                      Lorem ipsum dolor sit amet, consectetur adipiscing elit
-                      sed do eiusmod tempor incididunt ut labore et dolore magna
-                      aliqua.
+                      Are you sure you want to delete this preset?
                     </p>
                   </DialogContent>
                 );
@@ -316,61 +322,88 @@ function Dialogs() {
               {(dialog) => {
                 const { setProject: setState, editorInstance } =
                   useEditorContext();
-                const [crop, setCrop] = createStore({
+                const [crop, setCrop] = createStore<Crop>({
                   position: dialog().position,
                   size: dialog().size,
                 });
+                const [cropOptions, setCropOptions] = makePersisted(
+                  createStore({
+                    showGrid: false,
+                  }),
+                  { name: "cropOptionsState" }
+                );
 
-                const display = editorInstance.recordings.display;
+                const display = editorInstance.recordings.segments[0].display;
 
-                const styles = createMemo(() => {
-                  return {
-                    left: `${(crop.position.x / display.width) * 100}%`,
-                    top: `${(crop.position.y / display.height) * 100}%`,
-                    right: `calc(${
-                      ((display.width - crop.size.x - crop.position.x) /
-                        display.width) *
-                      100
-                    }%)`,
-                    bottom: `calc(${
-                      ((display.height - crop.size.y - crop.position.y) /
-                        display.height) *
-                      100
-                    }%)`,
-                  };
-                });
-
-                let cropAreaRef: HTMLDivElement;
-                let cropTargetRef: HTMLDivElement;
+                const adjustedCrop = createMemo(() => cropToFloor(crop));
 
                 return (
                   <>
                     <Dialog.Header>
                       <div class="flex flex-row space-x-[0.75rem]">
-                        {/*<AspectRatioSelect />*/}
                         <div class="flex flex-row items-center space-x-[0.5rem] text-gray-400">
                           <span>Size</span>
                           <div class="w-[3.25rem]">
-                            <Input value={crop.size.x} disabled />
+                            <Input
+                              class="bg-transparent dark:!text-[#ababab]"
+                              value={adjustedCrop().size.x}
+                              disabled
+                            />
                           </div>
                           <span>x</span>
                           <div class="w-[3.25rem]">
-                            <Input value={crop.size.y} disabled />
+                            <Input
+                              class="bg-transparent dark:!text-[#ababab]"
+                              value={adjustedCrop().size.y}
+                              disabled
+                            />
                           </div>
                         </div>
                         <div class="flex flex-row items-center space-x-[0.5rem] text-gray-400">
                           <span>Position</span>
                           <div class="w-[3.25rem]">
-                            <Input value={crop.position.x} disabled />
+                            <Input
+                              class="bg-transparent dark:!text-[#ababab]"
+                              value={adjustedCrop().position.x}
+                              disabled
+                            />
                           </div>
                           <span>x</span>
                           <div class="w-[3.25rem]">
                             <Input
-                              class="w-[3.25rem]"
-                              value={crop.position.y}
+                              class="w-[3.25rem] bg-transparent dark:!text-[#ababab]"
+                              value={adjustedCrop().position.y}
                               disabled
                             />
                           </div>
+                        </div>
+                        <div class="flex flex-row items-center space-x-[0.5rem] text-gray-400">
+                          <Tooltip.Root openDelay={500}>
+                            <Tooltip.Trigger
+                              class="fixed flex flex-row items-center w-8 h-8"
+                              tabIndex={-1}
+                            >
+                              <button
+                                type="button"
+                                class={`flex items-center justify-center text-center rounded-[0.5rem] h-[2rem] w-[2rem] border text-[0.875rem] focus:border-blue-300 outline-none transition-colors duration-200 ${
+                                  cropOptions.showGrid
+                                    ? "bg-gray-200 text-blue-300"
+                                    : "text-gray-500"
+                                }`}
+                                onClick={() =>
+                                  setCropOptions("showGrid", (s) => !s)
+                                }
+                              >
+                                <IconCapPadding class="w-4" />
+                              </button>
+                            </Tooltip.Trigger>
+                            <Tooltip.Portal>
+                              <Tooltip.Content class="z-50 px-2 py-1 text-xs text-gray-50 bg-gray-500 rounded shadow-lg animate-in fade-in duration-100">
+                                Rule of Thirds
+                                <Tooltip.Arrow class="fill-gray-500" />
+                              </Tooltip.Content>
+                            </Tooltip.Portal>
+                          </Tooltip.Root>
                         </div>
                       </div>
                       <EditorButton
@@ -380,8 +413,8 @@ function Dialogs() {
                           setCrop({
                             position: { x: 0, y: 0 },
                             size: {
-                              x: editorInstance.recordings.display.width,
-                              y: editorInstance.recordings.display.height,
+                              x: display.width,
+                              y: display.height,
                             },
                           })
                         }
@@ -391,12 +424,16 @@ function Dialogs() {
                     </Dialog.Header>
                     <Dialog.Content>
                       <div class="flex flex-row justify-center">
-                        <div
-                          class="relative bg-blue-200"
-                          // biome-ignore lint/style/noNonNullAssertion: ref
-                          ref={cropAreaRef!}
-                        >
-                          <div class="divide-black-transparent-10 overflow-hidden rounded-lg">
+                        <div class="divide-black-transparent-10 overflow-hidden rounded">
+                          <Cropper
+                            value={crop}
+                            onCropChange={setCrop}
+                            mappedSize={{
+                              x: display.width,
+                              y: display.height,
+                            }}
+                            showGuideLines={cropOptions.showGrid}
+                          >
                             <img
                               class="shadow pointer-events-none max-h-[70vh]"
                               alt="screenshot"
@@ -404,232 +441,14 @@ function Dialogs() {
                                 `${editorInstance.path}/screenshots/display.jpg`
                               )}
                             />
-                          </div>
-                          <div
-                            class="bg-white-transparent-20 absolute cursor-move"
-                            // biome-ignore lint/style/noNonNullAssertion: ref
-                            ref={cropTargetRef!}
-                            style={styles()}
-                            onMouseDown={(downEvent) => {
-                              const original = {
-                                position: { ...crop.position },
-                                size: { ...crop.size },
-                              };
-
-                              createRoot((dispose) => {
-                                createEventListenerMap(window, {
-                                  mouseup: () => dispose(),
-                                  mousemove: (moveEvent) => {
-                                    const diff = {
-                                      x:
-                                        ((moveEvent.clientX -
-                                          downEvent.clientX) /
-                                          cropAreaRef.clientWidth) *
-                                        display.width,
-                                      y:
-                                        ((moveEvent.clientY -
-                                          downEvent.clientY) /
-                                          cropAreaRef.clientHeight) *
-                                        display.height,
-                                    };
-
-                                    const x = Math.floor(
-                                      (() => {
-                                        if (original.position.x + diff.x < 0)
-                                          return 0;
-                                        if (
-                                          original.position.x + diff.x >
-                                          display.width - crop.size.x
-                                        )
-                                          return display.width - crop.size.x;
-
-                                        return original.position.x + diff.x;
-                                      })()
-                                    );
-
-                                    const y = Math.floor(
-                                      (() => {
-                                        if (original.position.y + diff.y < 0)
-                                          return 0;
-                                        if (
-                                          original.position.y + diff.y >
-                                          display.height - crop.size.y
-                                        )
-                                          return display.height - crop.size.y;
-
-                                        return original.position.y + diff.y;
-                                      })()
-                                    );
-
-                                    setCrop("position", { x, y });
-                                  },
-                                });
-                              });
-                            }}
-                          >
-                            <For
-                              each={Array.from({ length: 4 }, (_, i) => ({
-                                x: i < 2 ? ("l" as const) : ("r" as const),
-                                y:
-                                  i % 2 === 0 ? ("t" as const) : ("b" as const),
-                              }))}
-                            >
-                              {(pos) => {
-                                const behaviours = {
-                                  x:
-                                    pos.x === "l"
-                                      ? ("both" as const)
-                                      : ("resize" as const),
-                                  y:
-                                    pos.y === "t"
-                                      ? ("both" as const)
-                                      : ("resize" as const),
-                                };
-
-                                return (
-                                  <button
-                                    type="button"
-                                    class="absolute"
-                                    style={{
-                                      ...(pos.x === "l"
-                                        ? { left: "0px" }
-                                        : { right: "0px" }),
-                                      ...(pos.y === "t"
-                                        ? { top: "0px" }
-                                        : { bottom: "0px" }),
-                                    }}
-                                    onMouseDown={(downEvent) => {
-                                      downEvent.stopPropagation();
-
-                                      const original = {
-                                        position: { ...crop.position },
-                                        size: { ...crop.size },
-                                      };
-
-                                      const MIN_SIZE = 100;
-
-                                      createRoot((dispose) => {
-                                        createEventListenerMap(window, {
-                                          mouseup: () => dispose(),
-                                          mousemove: (moveEvent) => {
-                                            batch(() => {
-                                              const diff = {
-                                                x:
-                                                  ((moveEvent.clientX -
-                                                    downEvent.clientX) /
-                                                    cropAreaRef.clientWidth) *
-                                                  display.width,
-                                                y:
-                                                  ((moveEvent.clientY -
-                                                    downEvent.clientY) /
-                                                    cropAreaRef.clientHeight) *
-                                                  display.height,
-                                              };
-
-                                              if (behaviours.x === "resize") {
-                                                setCrop(
-                                                  "size",
-                                                  "x",
-                                                  Math.floor(
-                                                    clamp(
-                                                      original.size.x + diff.x,
-                                                      MIN_SIZE,
-                                                      editorInstance.recordings
-                                                        .display.width -
-                                                        crop.position.x
-                                                    )
-                                                  )
-                                                );
-                                              } else {
-                                                setCrop(
-                                                  "position",
-                                                  "x",
-                                                  Math.floor(
-                                                    clamp(
-                                                      original.position.x +
-                                                        diff.x,
-                                                      0,
-                                                      editorInstance.recordings
-                                                        .display.width -
-                                                        MIN_SIZE
-                                                    )
-                                                  )
-                                                );
-                                                setCrop(
-                                                  "size",
-                                                  "x",
-                                                  Math.floor(
-                                                    clamp(
-                                                      original.size.x - diff.x,
-                                                      MIN_SIZE,
-                                                      editorInstance.recordings
-                                                        .display.width
-                                                    )
-                                                  )
-                                                );
-                                              }
-
-                                              if (behaviours.y === "resize") {
-                                                setCrop(
-                                                  "size",
-                                                  "y",
-                                                  Math.floor(
-                                                    clamp(
-                                                      original.size.y + diff.y,
-                                                      MIN_SIZE,
-                                                      editorInstance.recordings
-                                                        .display.height -
-                                                        crop.position.y
-                                                    )
-                                                  )
-                                                );
-                                              } else {
-                                                setCrop(
-                                                  "position",
-                                                  "y",
-                                                  Math.floor(
-                                                    clamp(
-                                                      original.position.y +
-                                                        diff.y,
-                                                      0,
-                                                      editorInstance.recordings
-                                                        .display.height -
-                                                        MIN_SIZE
-                                                    )
-                                                  )
-                                                );
-                                                setCrop(
-                                                  "size",
-                                                  "y",
-                                                  Math.floor(
-                                                    clamp(
-                                                      original.size.y - diff.y,
-                                                      MIN_SIZE,
-                                                      editorInstance.recordings
-                                                        .display.height
-                                                    )
-                                                  )
-                                                );
-                                              }
-                                            });
-                                          },
-                                        });
-                                      });
-                                    }}
-                                  >
-                                    <div class="size-[1rem] bg-gray-500 border border-gray-50 rounded-full absolute -top-[0.5rem] -left-[0.5rem]" />
-                                  </button>
-                                );
-                              }}
-                            </For>
-                          </div>
+                          </Cropper>
                         </div>
                       </div>
                     </Dialog.Content>
                     <Dialog.Footer>
                       <Button
                         onClick={() => {
-                          setState("background", "crop", crop);
+                          setState("background", "crop", adjustedCrop());
                           setDialog((d) => ({ ...d, open: false }));
                         }}
                       >
@@ -645,8 +464,4 @@ function Dialogs() {
       </Show>
     </Dialog.Root>
   );
-}
-
-function clamp(n: number, min = 0, max = 1) {
-  return Math.max(min, Math.min(max, n));
 }

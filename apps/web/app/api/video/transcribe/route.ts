@@ -1,9 +1,7 @@
 import type { NextRequest } from "next/server";
 import {
   S3Client,
-  ListObjectsV2Command,
   GetObjectCommand,
-  HeadObjectCommand,
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -12,7 +10,8 @@ import { getHeaders } from "@/utils/helpers";
 import { db } from "@cap/database";
 import { s3Buckets, videos } from "@cap/database/schema";
 import { eq } from "drizzle-orm";
-import { createS3Client, getS3Bucket } from "@/utils/s3";
+import { createS3Client } from "@/utils/s3";
+import { serverEnv } from "@cap/env";
 
 export const maxDuration = 120;
 
@@ -31,13 +30,7 @@ export async function GET(request: NextRequest) {
   const videoId = searchParams.get("videoId") || "";
   const origin = request.headers.get("origin") as string;
 
-  if (
-    !process.env.NEXT_PUBLIC_CAP_AWS_BUCKET ||
-    !process.env.NEXT_PUBLIC_CAP_AWS_REGION ||
-    !process.env.CAP_AWS_ACCESS_KEY ||
-    !process.env.CAP_AWS_SECRET_KEY ||
-    !process.env.DEEPGRAM_API_KEY
-  ) {
+  if (!serverEnv.DEEPGRAM_API_KEY) {
     return new Response(
       JSON.stringify({
         error: true,
@@ -82,7 +75,44 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { video, bucket } = query[0];
+  const result = query[0];
+  if (!result || !result.video) {
+    return new Response(
+      JSON.stringify({ error: true, message: "Video information is missing" }),
+      {
+        status: 500,
+        headers: getHeaders(origin),
+      }
+    );
+  }
+
+  const { video, bucket } = result;
+
+  if (!video) {
+    return new Response(
+      JSON.stringify({ error: true, message: "Video information is missing" }),
+      {
+        status: 500,
+        headers: getHeaders(origin),
+      }
+    );
+  }
+
+  const awsRegion = video.awsRegion;
+  const awsBucket = video.awsBucket;
+
+  if (!awsRegion || !awsBucket) {
+    return new Response(
+      JSON.stringify({
+        error: true,
+        message: "AWS region or bucket information is missing",
+      }),
+      {
+        status: 500,
+        headers: getHeaders(origin),
+      }
+    );
+  }
 
   if (
     video.transcriptionStatus === "COMPLETE" ||
@@ -101,76 +131,27 @@ export async function GET(request: NextRequest) {
     .set({ transcriptionStatus: "PROCESSING" })
     .where(eq(videos.id, videoId));
 
-  const Bucket = getS3Bucket(bucket);
-  const filePrefix = `${userId}/${videoId}/combined-source/`;
-
-  const s3Client = createS3Client(bucket);
+  const s3Client = await createS3Client(bucket);
 
   try {
-    const audioSegmentCommand = new ListObjectsV2Command({
-      Bucket,
-      Prefix: filePrefix,
-    });
+    const videoKey = `${userId}/${videoId}/result.mp4`;
 
-    const objects = await s3Client.send(audioSegmentCommand);
-
-    const files = await Promise.all(
-      (objects.Contents || []).map(async (object) => {
-        const presignedUrl = await getSignedUrl(
-          s3Client,
-          new GetObjectCommand({
-            Bucket,
-            Key: object.Key,
-          })
-        );
-
-        return presignedUrl;
-      })
-    );
-
-    const uploadUrl = await getSignedUrl(
-      s3Client,
-      new PutObjectCommand({
-        Bucket,
-        Key: `${userId}/${videoId}/generated/all-audio.mp3`,
-      })
-    );
-
-    const tasksServerResponse = await fetch(
-      `${process.env.NEXT_PUBLIC_TASKS_URL}/api/v1/merge-audio-segments`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          videoId,
-          segments: files,
-          uploadUrl,
-        }),
-      }
-    );
-
-    if (tasksServerResponse.status !== 200) {
-      throw new Error("Failed to merge audio segments");
-    }
-
-    const uploadedFileUrl = await getSignedUrl(
+    const videoUrl = await getSignedUrl(
       s3Client,
       new GetObjectCommand({
-        Bucket,
-        Key: `${userId}/${videoId}/generated/all-audio.mp3`,
+        Bucket: awsBucket,
+        Key: videoKey,
       })
     );
 
-    const transcription = await transcribeAudio(uploadedFileUrl);
+    const transcription = await transcribeAudio(videoUrl);
 
     if (transcription === "") {
       throw new Error("Failed to transcribe audio");
     }
 
     const uploadCommand = new PutObjectCommand({
-      Bucket,
+      Bucket: awsBucket,
       Key: `${userId}/${videoId}/transcription.vtt`,
       Body: transcription,
       ContentType: "text/vtt",
@@ -193,14 +174,13 @@ export async function GET(request: NextRequest) {
       }
     );
   } catch (error) {
-    console.error("Error processing audio files", error);
     await db
       .update(videos)
       .set({ transcriptionStatus: "ERROR" })
       .where(eq(videos.id, videoId));
 
     return new Response(
-      JSON.stringify({ error: true, message: "Error processing audio files" }),
+      JSON.stringify({ error: true, message: "Error processing video file" }),
       {
         status: 500,
         headers: getHeaders(origin),
@@ -238,7 +218,7 @@ function formatToWebVTT(result: any): string {
 
         group = [];
         start = words[i + 1] ? formatTimestamp(words[i + 1].start) : start;
-        wordCount = 0; // Reset the counter for the next group
+        wordCount = 0;
       }
     }
   });
@@ -256,22 +236,25 @@ function formatTimestamp(seconds: number): string {
   return `${hours}:${minutes}:${secs}.${millis}`;
 }
 
-async function transcribeAudio(audioUrl: string): Promise<string> {
-  const deepgram = createClient(process.env.DEEPGRAM_API_KEY as string);
+async function transcribeAudio(videoUrl: string): Promise<string> {
+  const deepgram = createClient(serverEnv.DEEPGRAM_API_KEY as string);
 
   const { result, error } = await deepgram.listen.prerecorded.transcribeUrl(
     {
-      url: audioUrl,
+      url: videoUrl,
     },
     {
       model: "nova-2",
       smart_format: true,
       detect_language: true,
       utterances: true,
+      mime_type: "video/mp4",
     }
   );
 
-  if (error) return "";
+  if (error) {
+    return "";
+  }
 
   const captions = formatToWebVTT(result);
 

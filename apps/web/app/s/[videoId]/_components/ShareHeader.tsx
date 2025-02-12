@@ -5,9 +5,10 @@ import { userSelectProps } from "@cap/database/auth/session";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "react-hot-toast";
-import { LinkIcon, Loader2 } from "lucide-react";
+import { Copy, Loader2 } from "lucide-react";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
+import { clientEnv, NODE_ENV } from "@cap/env";
 
 export const ShareHeader = ({
   data,
@@ -16,7 +17,7 @@ export const ShareHeader = ({
 }: {
   data: typeof videos.$inferSelect;
   user: typeof userSelectProps | null;
-  individualFiles: {
+  individualFiles?: {
     fileName: string;
     url: string;
   }[];
@@ -29,7 +30,7 @@ export const ShareHeader = ({
   const handleBlur = async () => {
     setIsEditing(false);
     const response = await fetch(
-      `${process.env.NEXT_PUBLIC_URL}/api/video/title`,
+      `${clientEnv.NEXT_PUBLIC_WEB_URL}/api/video/title`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -59,6 +60,8 @@ export const ShareHeader = ({
   };
 
   const downloadZip = async () => {
+    if (!individualFiles) return;
+
     setIsDownloading(true);
     const zip = new JSZip();
 
@@ -110,27 +113,6 @@ export const ShareHeader = ({
                     {title}
                   </h1>
                 )}
-                <div>
-                  <button
-                    data-tooltip-id="clipboard"
-                    data-tooltip-content="Copy link to clipboard"
-                    className="bg-white p-2 w-8 h-8 rounded-lg flex items-center justify-center border hover:border-gray-300 transition-all"
-                    onClick={() => {
-                      if (process.env.NEXT_PUBLIC_IS_CAP) {
-                        navigator.clipboard.writeText(
-                          `https://cap.link/${data.id}`
-                        );
-                      } else {
-                        navigator.clipboard.writeText(
-                          `${process.env.NEXT_PUBLIC_URL}/s/${data.id}`
-                        );
-                      }
-                      toast.success("Link copied to clipboard!");
-                    }}
-                  >
-                    <LinkIcon className="w-5 h-5" />
-                  </button>
-                </div>
               </div>
               <p className="text-gray-400 text-sm">
                 {moment(data.createdAt).fromNow()}
@@ -158,11 +140,35 @@ export const ShareHeader = ({
                   </Button>
                 </div>
               )}
+              <Button
+                variant="gray"
+                className="hover:bg-gray-300"
+                onClick={() => {
+                  if (
+                    clientEnv.NEXT_PUBLIC_IS_CAP &&
+                    NODE_ENV === "production"
+                  ) {
+                    navigator.clipboard.writeText(
+                      `https://cap.link/${data.id}`
+                    );
+                  } else {
+                    navigator.clipboard.writeText(
+                      `${clientEnv.NEXT_PUBLIC_WEB_URL}/s/${data.id}`
+                    );
+                  }
+                  toast.success("Link copied to clipboard!");
+                }}
+              >
+                {clientEnv.NEXT_PUBLIC_IS_CAP && NODE_ENV === "production"
+                  ? `cap.link/${data.id}`
+                  : `${clientEnv.NEXT_PUBLIC_WEB_URL}/s/${data.id}`}
+                <Copy className="ml-2 h-4 w-4" />
+              </Button>
               {user !== null && (
                 <div className="hidden md:flex">
                   <Button
                     onClick={() => {
-                      push(`${process.env.NEXT_PUBLIC_URL}/dashboard`);
+                      push(`${clientEnv.NEXT_PUBLIC_WEB_URL}/dashboard`);
                     }}
                   >
                     Go to Dashboard
