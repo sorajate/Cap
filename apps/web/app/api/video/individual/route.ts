@@ -6,6 +6,7 @@ import { ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { getCurrentUser } from "@cap/database/auth/session";
 import { getHeaders } from "@/utils/helpers";
 import { createS3Client, getS3Bucket } from "@/utils/s3";
+import { S3_BUCKET_URL } from "@cap/utils";
 
 export const revalidate = 3599;
 
@@ -47,7 +48,15 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { video, bucket } = query[0];
+  const result = query[0];
+  if (!result) {
+    return new Response(
+      JSON.stringify({ error: true, message: "Video does not exist" }),
+      { status: 401, headers: getHeaders(origin) }
+    );
+  }
+
+  const { video, bucket } = result;
 
   if (video.public === false) {
     const user = await getCurrentUser();
@@ -60,11 +69,11 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const Bucket = getS3Bucket(bucket);
+  const Bucket = await getS3Bucket(bucket);
   const individualPrefix = `${userId}/${videoId}/individual/`;
 
   try {
-    const s3Client = createS3Client(bucket);
+    const s3Client = await createS3Client(bucket);
 
     const objectsCommand = new ListObjectsV2Command({
       Bucket,
@@ -82,10 +91,10 @@ export async function GET(request: NextRequest) {
 
     const individualFiles = objects.Contents.map((object) => {
       const key = object.Key as string;
-      const fileName = key.split('/').pop();
+      const fileName = key.split("/").pop();
       return {
         fileName,
-        url: `https://v.cap.so/${key}`,
+        url: `${S3_BUCKET_URL}/${key}`,
       };
     });
 

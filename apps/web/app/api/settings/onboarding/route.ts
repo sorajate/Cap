@@ -12,12 +12,7 @@ export async function POST(request: NextRequest) {
   if (!user) {
     console.error("User not found");
 
-    return new Response(JSON.stringify({ error: true }), {
-      status: 401,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    return Response.json({ error: true }, { status: 401 });
   }
 
   await db
@@ -33,13 +28,13 @@ export async function POST(request: NextRequest) {
     fullName += ` ${lastName}`;
   }
 
-  const spaceData = await db
+  const [space] = await db
     .select()
     .from(spaces)
     .where(or(eq(spaces.ownerId, user.id), eq(spaceMembers.userId, user.id)))
     .leftJoin(spaceMembers, eq(spaces.id, spaceMembers.spaceId));
 
-  if (spaceData.length === 0) {
+  if (!space) {
     const spaceId = nanoId();
 
     await db.insert(spaces).values({
@@ -52,23 +47,18 @@ export async function POST(request: NextRequest) {
       id: nanoId(),
       userId: user.id,
       role: "owner",
-      spaceId: spaceId,
+      spaceId,
     });
 
     await db
       .update(users)
-      .set({
-        activeSpaceId: spaceId,
-      })
+      .set({ activeSpaceId: spaceId })
       .where(eq(users.id, user.id));
   }
 
-  return new Response(
-    JSON.stringify({
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    })
+  // After updating user and creating space
+  return Response.json(
+    { success: true, message: "Onboarding completed successfully" },
+    { status: 200 }
   );
 }

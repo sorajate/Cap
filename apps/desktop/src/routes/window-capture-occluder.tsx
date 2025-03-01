@@ -1,48 +1,47 @@
-import { Show, Suspense } from "solid-js";
+import { getAllWindows } from "@tauri-apps/api/window";
+import { type as ostype } from "@tauri-apps/plugin-os";
+import { onMount, Show, Suspense } from "solid-js";
+import CropAreaRenderer from "~/components/CropAreaRenderer";
 import { createCurrentRecordingQuery } from "~/utils/queries";
 
 export default function () {
   const currentRecording = createCurrentRecordingQuery();
 
+  getAllWindows().then((w) =>
+    w.forEach((w) => {
+      if (w.label === "camera" || w.label === "in-progress-recording")
+        w.setFocus();
+    })
+  );
+
+  const bounds = () => {
+    if (!currentRecording.data) return;
+    if ("window" in currentRecording.data) {
+      return currentRecording.data.window.bounds;
+    }
+    if ("area" in currentRecording.data) {
+      return currentRecording.data.area.bounds;
+    }
+  };
+
   return (
     <Suspense>
-      <Show
-        when={
-          currentRecording.data &&
-          currentRecording.data.displaySource.variant === "window" &&
-          currentRecording.data.displaySource.bounds
-        }
-      >
-        {(bounds) => (
-          <div class="w-screen h-screen relative animate-in fade-in">
-            <div
-              class="bg-black-transparent-40 absolute inset-x-0 top-0"
-              style={{ height: `${bounds().y}px` }}
+      <Show when={bounds()}>
+        {(bounds) => {
+          getAllWindows().then((w) =>
+            w.forEach((w) => {
+              if (w.label === "camera" || w.label === "in-progress-recording")
+                w.setFocus();
+            })
+          );
+
+          return (
+            <CropAreaRenderer
+              bounds={bounds()}
+              borderRadius={ostype() === "macos" ? 9 : 7}
             />
-            <div
-              class="bg-black-transparent-40 absolute left-0"
-              style={{
-                top: `${bounds().y}px`,
-                height: `${bounds().height}px`,
-                width: `${bounds().x}px`,
-              }}
-            />
-            <div
-              class="bg-black-transparent-40 absolute right-0"
-              style={{
-                top: `${bounds().y}px`,
-                height: `${bounds().height}px`,
-                width: `calc(100vw - ${bounds().x + bounds().width}px)`,
-              }}
-            />
-            <div
-              class="bg-black-transparent-40 absolute inset-x-0 bottom-0"
-              style={{
-                height: `calc(100vh - ${bounds().y + bounds().height}px)`,
-              }}
-            />
-          </div>
-        )}
+          );
+        }}
       </Show>
     </Suspense>
   );

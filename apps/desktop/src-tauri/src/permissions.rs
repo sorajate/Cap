@@ -1,18 +1,11 @@
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, WebviewUrl, WebviewWindow, Wry};
-
-use core_foundation::boolean::CFBoolean;
-use core_foundation::dictionary::{CFDictionary, CFDictionaryRef}; // Import CFDictionaryRef
-use core_foundation::string::CFString;
-#[cfg(target_os = "macos")]
-use nokhwa_bindings_macos::{AVAuthorizationStatus, AVMediaType};
-use std::os::raw::c_void;
 
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
-    fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
+    fn AXIsProcessTrustedWithOptions(options: core_foundation::dictionary::CFDictionaryRef)
+        -> bool;
 }
 
 #[derive(Serialize, Deserialize, specta::Type)]
@@ -65,6 +58,8 @@ pub fn open_permission_settings(permission: OSPermission) {
 pub async fn request_permission(permission: OSPermission) {
     #[cfg(target_os = "macos")]
     {
+        use cap_media::platform::AVMediaType;
+
         match permission {
             OSPermission::ScreenRecording => {
                 scap::request_permission();
@@ -77,7 +72,7 @@ pub async fn request_permission(permission: OSPermission) {
 }
 
 #[cfg(target_os = "macos")]
-fn request_av_permission(media_type: AVMediaType) {
+fn request_av_permission(media_type: cap_media::platform::AVMediaType) {
     use objc::{runtime::*, *};
     use tauri_nspanel::block::ConcreteBlock;
 
@@ -123,10 +118,7 @@ pub struct OSPermissionsCheck {
 
 impl OSPermissionsCheck {
     pub fn necessary_granted(&self) -> bool {
-        self.screen_recording.permitted()
-            && self.microphone.permitted()
-            && self.camera.permitted()
-            && self.accessibility.permitted()
+        self.screen_recording.permitted() && self.accessibility.permitted()
     }
 }
 
@@ -135,6 +127,22 @@ impl OSPermissionsCheck {
 pub fn do_permissions_check(initial_check: bool) -> OSPermissionsCheck {
     #[cfg(target_os = "macos")]
     {
+        use cap_media::platform::AVMediaType;
+
+        fn check_av_permission(media_type: AVMediaType) -> OSPermissionStatus {
+            use cap_media::platform::AVAuthorizationStatus;
+            use objc::*;
+
+            let cls = objc::class!(AVCaptureDevice);
+            let status: AVAuthorizationStatus =
+                unsafe { msg_send![cls, authorizationStatusForMediaType:media_type.into_ns_str()] };
+            match status {
+                AVAuthorizationStatus::NotDetermined => OSPermissionStatus::Empty,
+                AVAuthorizationStatus::Authorized => OSPermissionStatus::Granted,
+                _ => OSPermissionStatus::Denied,
+            }
+        }
+
         OSPermissionsCheck {
             screen_recording: {
                 let result = scap::has_permission();
@@ -146,10 +154,7 @@ pub fn do_permissions_check(initial_check: bool) -> OSPermissionsCheck {
             },
             microphone: check_av_permission(AVMediaType::Audio),
             camera: check_av_permission(AVMediaType::Video),
-            accessibility: {
-                let accessibility_status = check_accessibility_permission();
-                accessibility_status
-            },
+            accessibility: { check_accessibility_permission() },
         }
     }
 
@@ -160,21 +165,7 @@ pub fn do_permissions_check(initial_check: bool) -> OSPermissionsCheck {
             microphone: OSPermissionStatus::NotNeeded,
             camera: OSPermissionStatus::NotNeeded,
             accessibility: OSPermissionStatus::NotNeeded,
-        };
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub fn check_av_permission(media_type: AVMediaType) -> OSPermissionStatus {
-    use objc::*;
-
-    let cls = objc::class!(AVCaptureDevice);
-    let status: AVAuthorizationStatus =
-        unsafe { msg_send![cls, authorizationStatusForMediaType:media_type.into_ns_str()] };
-    match status {
-        AVAuthorizationStatus::NotDetermined => OSPermissionStatus::Empty,
-        AVAuthorizationStatus::Authorized => OSPermissionStatus::Granted,
-        _ => OSPermissionStatus::Denied,
+        }
     }
 }
 
@@ -198,9 +189,11 @@ pub fn request_accessibility_permission() {
     #[cfg(target_os = "macos")]
     {
         use core_foundation::base::TCFType;
+        use core_foundation::dictionary::CFDictionary; // Import CFDictionaryRef
+        use core_foundation::string::CFString;
 
         let prompt_key = CFString::new("AXTrustedCheckOptionPrompt");
-        let prompt_value = CFBoolean::true_value();
+        let prompt_value = core_foundation::boolean::CFBoolean::true_value();
 
         let options =
             CFDictionary::from_CFType_pairs(&[(prompt_key.as_CFType(), prompt_value.as_CFType())]);
@@ -209,26 +202,4 @@ pub fn request_accessibility_permission() {
             AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef());
         }
     }
-}
-
-#[tauri::command(async)]
-#[specta::specta]
-pub fn open_permissions_window(app: &impl Manager<Wry>) {
-    if let Some(window) = app.get_webview_window("permissions") {
-        window.set_focus().ok();
-        return;
-    }
-
-    WebviewWindow::builder(app, "permissions", WebviewUrl::App("/permissions".into()))
-        .title("Cap")
-        .inner_size(300.0, 256.0)
-        .resizable(false)
-        .maximized(false)
-        .shadow(true)
-        .accept_first_mouse(true)
-        .transparent(true)
-        .hidden_title(true)
-        .decorations(false)
-        .build()
-        .ok();
 }

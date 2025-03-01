@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
-use tauri_plugin_store::{with_store, StoreCollection};
+use tauri_plugin_store::StoreExt;
 use tauri_specta::Event;
 
 #[derive(Serialize, Deserialize, Type, PartialEq, Clone, Copy)]
@@ -58,17 +58,11 @@ pub struct HotkeysStore {
 
 impl HotkeysStore {
     pub fn get(app: &AppHandle) -> Result<Option<Self>, String> {
-        let stores = app
-            .try_state::<StoreCollection<Wry>>()
-            .ok_or("Store not found")?;
-        with_store(app.clone(), stores, "store", |store| {
-            let Some(store) = store.get("hotkeys").cloned() else {
-                return Ok(None);
-            };
+        let Ok(Some(store)) = app.store("store").map(|s| s.get("hotkeys")) else {
+            return Ok(None);
+        };
 
-            Ok(serde_json::from_value(store)?)
-        })
-        .map_err(|e| e.to_string())
+        serde_json::from_value(store).map_err(|e| e.to_string())
     }
 }
 

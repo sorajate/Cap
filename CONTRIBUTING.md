@@ -22,34 +22,45 @@ There are many ways to contribute to Cap. You can:
 - [Suggest a feature (via Discord)](https://discord.com/invite/y8gdQ3WRN3)
 - Submit a PR
 
+## Runing Cap
+
 ### Development Requirements
 
+Before anything else, make sure you have the following installed:
+
 - Node Version 20+
-- Cargo 1.77.0+ (previous versions may work)
+- Rust 1.84.0+
 - pnpm 8.10.5+
 - Docker ([OrbStack](https://orbstack.dev/) recommended)
 
-### How do I get started with development on my local machine?
+### General Setup
 
-This is a very top level guide right now, but if you want to develop for both the web app and desktop app, you will need to make sure the below steps are followed. Alternatively, if you are only looking to run the desktop app locally, you can follow the `How do I run the desktop app locally without needing to use auth?` steps.
+Configure the necessary environment variables by copying the `.env.example` file to `.env`.
+`.env.example` by default assumes you want to run both `@cap/desktop` and `@cap/web` locally.
+Follow the instructions in the file for how to configure the environment variables for which apps you want to run.
 
-1. Clone the repository
-2. Install dependencies with `pnpm install`
-3. Clone .env.example and rename it to .env
-4. At the root of the directory, run the app with `pnpm dev`. This will create a local database simulator, run the necessary DB migrations, and start both the web app and desktop app concurrently.
-5. Make sure both the the desktop app, and web app can be built without any errors. For the desktop app, use `pnpm tauri:build`. For the web app, use `pnpm build`
-6. Submit a PR with your changes
+Run `pnpm cap-setup` to install native dependencies such as FFmpeg,
+then run `pnpm install`.
 
-### How do I run the desktop app locally without needing to use auth?
+On Windows, llvm, clang, and VCPKG must be installed.
+`pnpm cap-setup` does not yet install these dependencies for you.
 
-You can run cap in "local mode", which means that no auth is required for the desktop app, and no video segments are uploaded. Similar to the above steps, this is how you can run the Cap desktop app in local mode with the least amount of .env vars.
+To run both `@cap/desktop` and `@cap/web` together, use `pnpm dev`.
+To run only one of them, use `pnpm dev:desktop` or `pnpm dev:web` respectively.
 
-1. Clone the repository
-2. Install dependencies with `pnpm install`
-3. Clone .env.example and rename it to .env
-4. Make sure you have `NEXT_PUBLIC_ENVIRONMENT=development`, `NEXT_PUBLIC_URL=http://localhost:3000` and `NEXT_PUBLIC_LOCAL_MODE=true`. These should be the only .env vars that you require to get the desktop app up and running.
-5. At the root of the directory, run the app with `pnpm dev`
+### `@cap/desktop` (desktop app)
 
-### How do I view the screen recording segments locally?
+When running `@cap/desktop` from a terminal on macOS,
+you will need to grant permissions (screen recording, microphone, etc.) to the terminal, not the Cap app.
+For example, if you run `pnpm dev:desktop` in the macOS `Terminal.app`,
+you will need to grant permissions to it instead of `Cap - Development.app`.
 
-The video segments are stored in your app data directory, under the folder `so.cap.desktop`. You should see a directory called `chunks`, which will contain both `video` and `audio` directories. You can find the relevant segments in either of those.
+#### Where are my recordings stored?
+
+You can find your recordings at `~/Library/Application Support/so.cap.desktop.dev/recordings` on macOS,
+and `%programfiles%/so.cap.desktop.dev/recordings` on Windows.
+
+### `@cap/web` (cap.so website)
+
+When running `pnpm dev` or `pnpm dev:web`, a MySQL database and MinIO S3 server will also be using Docker.
+If you want to _only_ run the `@cap/web` NextJS app, `cd` into `./apps/web` and run `pnpm dev`.

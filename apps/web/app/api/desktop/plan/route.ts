@@ -1,15 +1,16 @@
 import { type NextRequest } from "next/server";
 import { db } from "@cap/database";
-import { users, videos } from "@cap/database/schema";
+import { users } from "@cap/database/schema";
 import { getCurrentUser } from "@cap/database/auth/session";
-import { nanoId } from "@cap/database/helpers";
 import { cookies } from "next/headers";
 import { isUserOnProPlan } from "@cap/utils";
 import { stripe } from "@cap/utils";
 import { eq } from "drizzle-orm";
+import { clientEnv } from "@cap/env";
+import crypto from "crypto";
 
 const allowedOrigins = [
-  process.env.NEXT_PUBLIC_URL,
+  clientEnv.NEXT_PUBLIC_WEB_URL,
   "http://localhost:3001",
   "tauri://localhost",
   "http://tauri.localhost",
@@ -55,28 +56,28 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
 
   if (!user) {
-    return new Response(JSON.stringify({ error: true }), {
-      status: 401,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    return Response.json({ error: true }, { status: 401 });
   }
 
   let isSubscribed = isUserOnProPlan({
     subscriptionStatus: user.stripeSubscriptionStatus as string,
   });
+
+  // Check for third-party Stripe subscription
+  if (user.thirdPartyStripeSubscriptionId) {
+    isSubscribed = true;
+  }
+
   if (!isSubscribed && !user.stripeSubscriptionId && user.stripeCustomerId) {
     try {
       const subscriptions = await stripe.subscriptions.list({
         customer: user.stripeCustomerId,
       });
       const activeSubscription = subscriptions.data.find(
-        (sub) => sub.status === 'active'
+        (sub) => sub.status === "active"
       );
       if (activeSubscription) {
         isSubscribed = true;
-        // Update the user's subscription status in the database
         await db
           .update(users)
           .set({
@@ -86,13 +87,23 @@ export async function GET(req: NextRequest) {
           .where(eq(users.id, user.id));
       }
     } catch (error) {
-      console.error('Error fetching subscription from Stripe:', error);
+      console.error("[GET] Error fetching subscription from Stripe:", error);
     }
+  }
+
+  let intercomHash = "";
+  if (process.env.INTERCOM_SECRET) {
+    intercomHash = crypto
+      .createHmac("sha256", process.env.INTERCOM_SECRET)
+      .update(user?.id ?? "")
+      .digest("hex");
   }
 
   return new Response(
     JSON.stringify({
       upgraded: isSubscribed,
+      stripeSubscriptionStatus: user.stripeSubscriptionStatus,
+      intercomHash: intercomHash
     }),
     {
       status: 200,
