@@ -1,54 +1,62 @@
+import { createQuery } from "@tanstack/solid-query";
 import { Store } from "@tauri-apps/plugin-store";
+import { onCleanup } from "solid-js";
 
-import type {
-  AuthStore,
-  ProjectConfiguration,
-  HotkeysStore,
-  GeneralSettingsStore,
+import {
+  type AuthStore,
+  type PresetsStore,
+  type HotkeysStore,
+  type GeneralSettingsStore,
+  commands,
 } from "~/utils/tauri";
 
-const store = new Store("store");
+let _store: Promise<Store> | undefined;
+const store = () => {
+  if (!_store) {
+    _store = Store.load("store");
+  }
 
-export type PresetsStore = {
-  presets: Array<{
-    name: string;
-    config: ProjectConfiguration;
-  }>;
-  default?: number;
+  return _store;
 };
 
-export const presetsStore = {
-  get: () => store.get<PresetsStore>("presets"),
-  set: async (value: PresetsStore) => {
-    await store.set("presets", value);
-    await store.save();
-  },
-  listen: (fn: (data: PresetsStore | null) => void) =>
-    store.onKeyChange<PresetsStore>("presets", fn),
-};
+function declareStore<T extends object>(name: string) {
+  const get = () => store().then((s) => s.get<T>(name));
+  const listen = (fn: (data?: T | undefined) => void) =>
+    store().then((s) => s.onKeyChange<T>(name, fn));
 
-export const authStore = {
-  get: () => store.get<AuthStore>("auth"),
-  set: async (value: AuthStore | null) => {
-    await store.set("auth", value);
-    await store.save();
-  },
-  listen: (fn: (data: AuthStore | null) => void) =>
-    store.onKeyChange<AuthStore>("presets", fn),
-};
+  return {
+    get,
+    listen,
+    set: async (value?: Partial<T>) => {
+      const s = await store();
+      if (value === undefined) s.delete(name);
+      else {
+        const current = (await s.get<T>(name)) || {};
+        await s.set(name, {
+          ...current,
+          ...value,
+        });
+      }
+      await s.save();
+    },
+    createQuery: () => {
+      const query = createQuery(() => ({
+        queryKey: ["store", name],
+        queryFn: async () => (await get()) ?? null,
+      }));
 
-export const hotkeysStore = {
-  get: () => store.get<HotkeysStore>("hotkeys"),
-  set: async (value: HotkeysStore) => {
-    await store.set("hotkeys", value);
-    await store.save();
-  },
-};
+      const cleanup = listen(() => {
+        query.refetch();
+      });
+      onCleanup(() => cleanup.then((c) => c()));
 
-export const generalSettingsStore = {
-  get: () => store.get<GeneralSettingsStore>("general_settings"),
-  set: async (value: GeneralSettingsStore) => {
-    await store.set("general_settings", value);
-    await store.save();
-  },
-};
+      return query;
+    },
+  };
+}
+
+export const presetsStore = declareStore<PresetsStore>("presets");
+export const authStore = declareStore<AuthStore>("auth");
+export const hotkeysStore = declareStore<HotkeysStore>("hotkeys");
+export const generalSettingsStore =
+  declareStore<GeneralSettingsStore>("general_settings");

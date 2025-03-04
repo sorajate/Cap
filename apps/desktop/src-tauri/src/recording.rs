@@ -1,434 +1,550 @@
-use crate::audio::AudioCapturer;
-use crate::capture::CaptureController;
-use crate::flags;
-use cap_ffmpeg::{FFmpeg, FFmpegInput, FFmpegProcess, FFmpegRawAudioInput};
-use device_query::{DeviceQuery, DeviceState};
-use futures::future::OptionFuture;
-use serde::Deserialize;
-use serde::Serialize;
-use specta::Type;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use std::{
-    fs::File,
-    sync::{Arc, Mutex},
-};
-use std::{path::PathBuf, time::Duration};
-use tauri::AppHandle;
-use tokio::sync::watch;
-
-use objc::rc::autoreleasepool;
-use objc::runtime::{Class, Object, Sel, BOOL, NO, YES};
-use objc::*;
+use std::{path::PathBuf, sync::Arc};
 
 use crate::{
-    audio, camera,
-    display::{self, get_window_bounds, CaptureTarget},
-    Bounds, RecordingOptions,
+    audio::AppSounds,
+    auth::AuthStore,
+    create_screenshot,
+    export::export_video,
+    general_settings::GeneralSettingsStore,
+    notifications, open_editor, open_external_link,
+    presets::PresetsStore,
+    upload::get_s3_config,
+    upload_exported_video, web_api,
+    windows::{CapWindowId, ShowCapWindow},
+    App, CurrentRecordingChanged, MutableState, NewStudioRecordingAdded, PreCreatedVideo,
+    RecordingStarted, RecordingStopped, UploadMode,
 };
+use cap_fail::fail;
+use cap_media::{feeds::CameraFeed, sources::ScreenCaptureTarget};
+use cap_media::{
+    platform::Bounds,
+    sources::{CaptureScreen, CaptureWindow},
+};
+use cap_project::{
+    ProjectConfiguration, RecordingMeta, RecordingMetaInner, StudioRecordingMeta,
+    TimelineConfiguration, TimelineSegment, ZoomSegment, XY,
+};
+use cap_recording::{
+    instant_recording::{CompletedInstantRecording, InstantRecordingHandle},
+    CompletedStudioRecording, RecordingError, RecordingMode, RecordingOptions,
+    StudioRecordingHandle,
+};
+use cap_rendering::ProjectRecordings;
+use cap_utils::spawn_actor;
+use clipboard_rs::{Clipboard, ClipboardContext};
+use tauri::{AppHandle, Manager};
+use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_specta::Event;
+use tracing::info;
 
-#[derive(Clone, Type, Serialize)]
-#[serde(rename_all = "camelCase", tag = "variant")]
-pub enum DisplaySource {
-    Screen,
-    Window { bounds: Bounds },
+pub enum RecordingActor {
+    Instant(InstantRecordingHandle),
+    Studio(StudioRecordingHandle),
 }
 
-#[derive(Serialize, Deserialize, Clone, Type)]
-pub struct MouseEvent {
-    pub active_modifiers: Vec<String>,
-    pub cursor_id: String,
-    pub process_time_ms: f64,
-    pub event_type: String,
-    pub unix_time_ms: f64,
-    pub x: f64,
-    pub y: f64,
+impl RecordingActor {
+    pub fn capture_target(&self) -> &ScreenCaptureTarget {
+        match self {
+            Self::Instant(a) => &a.options.capture_target,
+            Self::Studio(a) => &a.options.capture_target,
+        }
+    }
+
+    pub async fn pause(&self) -> Result<(), RecordingError> {
+        match self {
+            Self::Instant(a) => a.pause().await,
+            Self::Studio(a) => a.pause().await,
+        }
+    }
+
+    pub async fn resume(&self) -> Result<(), RecordingError> {
+        match self {
+            Self::Instant(a) => a.resume().await,
+            Self::Studio(a) => a.resume().await,
+        }
+    }
+
+    pub async fn stop(&self) -> Result<CompletedRecording, RecordingError> {
+        Ok(match self {
+            Self::Instant(a) => CompletedRecording::Instant(a.stop().await?),
+            Self::Studio(a) => CompletedRecording::Studio(a.stop().await?),
+        })
+    }
+
+    pub fn bounds(&self) -> &Bounds {
+        match self {
+            Self::Instant(a) => &a.bounds,
+            Self::Studio(a) => &a.bounds,
+        }
+    }
 }
 
-#[derive(Type, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InProgressRecording {
-    pub recording_dir: PathBuf,
-    #[serde(skip)]
-    pub ffmpeg_process: FFmpegProcess,
-    #[serde(skip)]
-    pub display: CaptureController,
-    pub display_source: DisplaySource,
-    #[serde(skip)]
-    pub camera: Option<CaptureController>,
-    #[serde(skip)]
-    pub audio: Option<(FFmpegCaptureOutput<FFmpegRawAudioInput>, AudioCapturer)>,
-    pub segments: Vec<f64>,
-    #[serde(skip)]
-    pub mouse_moves: Arc<Mutex<Vec<MouseEvent>>>,
-    #[serde(skip)]
-    pub mouse_clicks: Arc<Mutex<Vec<MouseEvent>>>,
-    #[serde(skip)]
-    pub stop_signal: Arc<Mutex<bool>>,
+pub enum CompletedRecording {
+    Instant(CompletedInstantRecording),
+    Studio(CompletedStudioRecording),
 }
 
-unsafe impl Send for InProgressRecording {}
-unsafe impl Sync for InProgressRecording {}
+impl CompletedRecording {
+    pub fn id(&self) -> &String {
+        match self {
+            Self::Instant(a) => &a.id,
+            Self::Studio(a) => &a.id,
+        }
+    }
 
-impl InProgressRecording {
-    pub fn stop(&mut self) {
-        use cap_project::*;
-        let meta = RecordingMeta {
-            project_path: self.recording_dir.clone(),
-            sharing: None,
-            pretty_name: format!(
-                "Cap {}",
-                chrono::Local::now().format("%Y-%m-%d at %H.%M.%S")
-            ),
-            display: Display {
-                path: self
-                    .display
-                    .output_path
-                    .strip_prefix(&self.recording_dir)
-                    .unwrap()
-                    .to_owned(),
-            },
-            camera: self.camera.as_ref().map(|camera| CameraMeta {
-                path: camera
-                    .output_path
-                    .strip_prefix(&self.recording_dir)
-                    .unwrap()
-                    .to_owned(),
-            }),
-            audio: self.audio.as_ref().map(|audio| AudioMeta {
-                path: audio
-                    .0
-                    .output_path
-                    .strip_prefix(&self.recording_dir)
-                    .unwrap()
-                    .to_owned(),
-            }),
-            segments: {
-                let relative_segments = self
-                    .segments
-                    .iter()
-                    .map(|s| s - self.segments[0])
-                    .collect::<Vec<_>>();
+    pub fn project_path(&self) -> &PathBuf {
+        match self {
+            Self::Instant(a) => &a.project_path,
+            Self::Studio(a) => &a.project_path,
+        }
+    }
+}
 
-                let mut segments = vec![];
+#[tauri::command(async)]
+#[specta::specta]
+pub fn list_capture_screens() -> Vec<CaptureScreen> {
+    cap_media::sources::list_screens()
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect()
+}
 
-                let mut diff = 0.0;
+#[tauri::command(async)]
+#[specta::specta]
+pub fn list_capture_windows() -> Vec<CaptureWindow> {
+    cap_media::sources::list_windows()
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect()
+}
 
-                for (i, chunk) in relative_segments.chunks_exact(2).enumerate() {
-                    if i < relative_segments.len() / 2 {
-                        segments.push(RecordingSegment {
-                            start: diff,
-                            end: chunk[1] - chunk[0] + diff,
+#[tauri::command(async)]
+#[specta::specta]
+pub fn list_cameras() -> Vec<String> {
+    CameraFeed::list_cameras()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn start_recording(
+    app: AppHandle,
+    state_mtx: MutableState<'_, App>,
+    recording_options: Option<RecordingOptions>,
+) -> Result<(), String> {
+    let mut state = state_mtx.write().await;
+
+    let recording_options = recording_options.unwrap_or(state.recording_options.clone());
+    state.recording_options = recording_options.clone();
+
+    let id = uuid::Uuid::new_v4().to_string();
+
+    let recording_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap()
+        .join("recordings")
+        .join(format!("{id}.cap"));
+
+    let camera_window = CapWindowId::Camera.get(&app);
+    match recording_options.mode {
+        RecordingMode::Instant => {
+            match AuthStore::get(&app) {
+                Ok(Some(_)) => {
+                    // Pre-create the video and get the shareable link
+                    if let Ok(s3_config) = get_s3_config(&app, false, None).await {
+                        let link = web_api::make_url(format!("/s/{}", s3_config.id()));
+
+                        state.pre_created_video = Some(PreCreatedVideo {
+                            id: s3_config.id().to_string(),
+                            link: link.clone(),
+                            config: s3_config,
                         });
+                        info!("Pre-created shareable link: {}", link);
                     }
-
-                    diff += chunk[1] - chunk[0];
                 }
+                // Allow the recording to proceed without error for any signed-in user
+                _ => {
+                    // User is not signed in
+                    ShowCapWindow::SignIn.show(&app).ok();
+                    Err("Please sign in to use instant recording")?;
+                }
+            }
 
-                segments
-            },
-        };
-
-        // Signal the mouse event tracking to stop
-        *self.stop_signal.lock().unwrap() = true;
-
-        self.display.stop();
-        if let Some(camera) = &self.camera {
-            camera.stop();
+            if let Some(window) = camera_window {
+                let _ = window.set_content_protected(false);
+            }
         }
-
-        self.ffmpeg_process.stop();
-        if let Err(e) = self.ffmpeg_process.wait() {
-            eprintln!("Failed to wait for ffmpeg process: {:?}", e);
-        }
-        if let Some(audio) = self.audio.take() {
-            audio.0.capture.stop();
-            drop(audio);
-        }
-
-        if flags::RECORD_MOUSE {
-            // Save mouse events to files
-            let mouse_moves_path = self.recording_dir.join("mousemoves.json");
-            let mouse_clicks_path = self.recording_dir.join("mouseclicks.json");
-
-            let mouse_moves = self.mouse_moves.lock().unwrap();
-            let mouse_clicks = self.mouse_clicks.lock().unwrap();
-
-            let mut mouse_moves_file = File::create(mouse_moves_path).unwrap();
-            let mut mouse_clicks_file = File::create(mouse_clicks_path).unwrap();
-
-            serde_json::to_writer(&mut mouse_moves_file, &*mouse_moves).unwrap();
-            serde_json::to_writer(&mut mouse_clicks_file, &*mouse_clicks).unwrap();
-        }
-
-        meta.save_for_project();
-    }
-
-    pub fn stop_and_discard(&mut self) {
-        // Signal the mouse event tracking to stop
-        *self.stop_signal.lock().unwrap() = true;
-
-        // Stop all recording processes
-        self.display.stop();
-        if let Some(camera) = &self.camera {
-            camera.stop();
-        }
-
-        self.ffmpeg_process.stop();
-        if let Err(e) = self.ffmpeg_process.wait() {
-            eprintln!("Failed to wait for ffmpeg process: {:?}", e);
-        }
-        if let Some(audio) = self.audio.take() {
-            audio.0.capture.stop();
-            drop(audio);
-        }
-
-        // Delete all recorded files
-        if let Err(e) = std::fs::remove_dir_all(&self.recording_dir) {
-            eprintln!("Failed to delete recording directory: {:?}", e);
+        RecordingMode::Studio => {
+            if let Some(window) = camera_window {
+                let _ = window.set_content_protected(true);
+            }
         }
     }
 
-    pub async fn pause(&mut self) -> Result<(), String> {
-        self.display.pause();
-        if let Some(camera) = &mut self.camera {
-            camera.pause();
-        }
-        if let Some(audio) = &mut self.audio {
-            audio.0.capture.pause();
-        }
-        println!("Sent pause command to FFmpeg");
-        Ok(())
+    if matches!(
+        recording_options.capture_target,
+        ScreenCaptureTarget::Window { .. } | ScreenCaptureTarget::Area { .. }
+    ) {
+        let _ = ShowCapWindow::WindowCaptureOccluder.show(&app);
     }
 
-    pub async fn resume(&mut self) -> Result<(), String> {
-        self.display.resume();
-        if let Some(camera) = &mut self.camera {
-            camera.resume();
-        }
-        if let Some(audio) = &mut self.audio {
-            audio.0.capture.resume();
-        }
+    drop(state);
 
-        println!("Sent resume command to FFmpeg");
-        Ok(())
-    }
-}
+    println!("spawning actor");
 
-pub struct FFmpegCaptureOutput<T> {
-    pub input: FFmpegInput<T>,
-    pub capture: CaptureController,
-    pub output_path: PathBuf,
-}
+    // done in spawn to catch panics just in case
+    let actor_done_rx = spawn_actor({
+        let state_mtx = Arc::clone(&state_mtx);
+        async move {
+            fail!("recording::spawn_actor");
+            let mut state = state_mtx.write().await;
 
-pub async fn start(
-    recording_dir: PathBuf,
-    recording_options: &RecordingOptions,
-) -> InProgressRecording {
-    let content_dir = recording_dir.join("content");
-
-    std::fs::create_dir_all(&content_dir).unwrap();
-
-    let mut ffmpeg = FFmpeg::new();
-
-    let (start_writing_tx, start_writing_rx) = watch::channel(false);
-
-    let audio_pipe_path = content_dir.join("audio-input.pipe");
-
-    let (display, camera, audio) = tokio::join!(
-        display::start_capturing(
-            content_dir.join("display.mp4"),
-            &recording_options.capture_target,
-            start_writing_rx.clone(),
-        ),
-        OptionFuture::from(
-            recording_options
-                .camera_label()
-                .and_then(camera::find_camera_by_label)
-                .map(|camera_info| {
-                    camera::start_capturing(
-                        content_dir.join("camera.mp4"),
-                        camera_info,
-                        start_writing_rx.clone(),
+            let (actor, actor_done_rx) = match recording_options.mode {
+                RecordingMode::Studio => {
+                    let (actor, actor_done_rx) = cap_recording::spawn_studio_recording_actor(
+                        id,
+                        recording_dir,
+                        recording_options.clone(),
+                        state.camera_feed.clone(),
+                        state.audio_input_feed.clone(),
                     )
-                }),
-        ),
-        OptionFuture::from(
-            recording_options
-                .audio_input_name()
-                .and_then(audio::AudioCapturer::init)
-                .map(|capturer| {
-                    audio::start_capturing(capturer, audio_pipe_path.clone(), start_writing_rx)
-                }),
-        )
-    );
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-    let audio = if let Some((controller, capturer)) = audio {
-        let output_path = content_dir.join("audio-input.mp3");
+                    (RecordingActor::Studio(actor), actor_done_rx)
+                }
+                RecordingMode::Instant => {
+                    let (actor, actor_done_rx) =
+                        cap_recording::instant_recording::spawn_instant_recording_actor(
+                            id,
+                            recording_dir,
+                            recording_options.clone(),
+                            state.audio_input_feed.clone(),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
 
-        dbg!(&capturer.config);
+                    (RecordingActor::Instant(actor), actor_done_rx)
+                }
+            };
 
-        let ffmpeg_input = ffmpeg.add_input(FFmpegRawAudioInput {
-            input: audio_pipe_path.into_os_string(),
-            sample_format: capturer.sample_format().to_string(),
-            sample_rate: capturer.sample_rate(),
-            channels: capturer.channels(),
-        });
+            state.set_current_recording(actor);
 
-        ffmpeg
-            .command
-            .args(["-f", "mp3", "-map", &format!("{}:a", ffmpeg_input.index)])
-            .args(["-b:a", "128k"])
-            .args(["-ar", &capturer.sample_rate().to_string()])
-            .args(["-ac", &capturer.channels().to_string(), "-async", "1"])
-            .args([
-                "-af",
-                "aresample=async=1:min_hard_comp=0.100000:first_pts=0",
-            ])
-            .arg(&output_path);
+            Ok::<_, String>(actor_done_rx)
+        }
+    })
+    .await
+    .map_err(|e| format!("Failed to spawn recording actor: {}", e))??;
 
-        Some((
-            FFmpegCaptureOutput {
-                input: ffmpeg_input,
-                capture: controller,
-                output_path,
-            },
-            capturer,
-        ))
-    } else {
-        None
-    };
+    spawn_actor({
+        let app = app.clone();
+        let state_mtx = Arc::clone(&state_mtx);
+        async move {
+            fail!("recording::wait_actor_done");
+            actor_done_rx.await.ok();
 
-    let ffmpeg_process = ffmpeg.start();
+            let mut state = state_mtx.write().await;
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    println!("Starting writing to named pipes");
-
-    start_writing_tx.send(true).unwrap();
-
-    // Initialize mouse event tracking
-    let mouse_moves = Arc::new(Mutex::new(Vec::new()));
-    let mouse_clicks = Arc::new(Mutex::new(Vec::new()));
-    let stop_signal = Arc::new(Mutex::new(false));
-
-    // Start mouse event tracking
-    let mouse_moves_clone = Arc::clone(&mouse_moves);
-    let mouse_clicks_clone = Arc::clone(&mouse_clicks);
-    let stop_signal_clone = Arc::clone(&stop_signal);
-    tokio::spawn(async move {
-        let device_state = DeviceState::new();
-        let mut last_mouse_state = device_state.get_mouse();
-        let start_time = Instant::now();
-
-        while !*stop_signal_clone.lock().unwrap() {
-            let mouse_state = device_state.get_mouse();
-            let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
-            let unix_time = chrono::Utc::now().timestamp_millis() as f64;
-
-            if mouse_state.coords != last_mouse_state.coords {
-                let mouse_event = MouseEvent {
-                    active_modifiers: vec![],
-                    cursor_id: get_cursor_id(),
-                    process_time_ms: elapsed,
-                    event_type: "mouseMoved".to_string(),
-                    unix_time_ms: unix_time,
-                    x: mouse_state.coords.0 as f64,
-                    y: mouse_state.coords.1 as f64,
-                };
-                mouse_moves_clone.lock().unwrap().push(mouse_event);
-            }
-
-            if mouse_state.button_pressed[0] && !last_mouse_state.button_pressed[0] {
-                let mouse_event = MouseEvent {
-                    active_modifiers: vec![],
-                    cursor_id: get_cursor_id(),
-                    process_time_ms: elapsed,
-                    event_type: "mouseClicked".to_string(),
-                    unix_time_ms: unix_time,
-                    x: mouse_state.coords.0 as f64,
-                    y: mouse_state.coords.1 as f64,
-                };
-                mouse_clicks_clone.lock().unwrap().push(mouse_event);
-            }
-
-            last_mouse_state = mouse_state;
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            // this clears the current recording for us
+            handle_recording_end(app, None, &mut state).await.ok();
         }
     });
 
-    InProgressRecording {
-        segments: vec![SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64()],
-        recording_dir,
-        ffmpeg_process,
-        display,
-        display_source: match recording_options.capture_target {
-            CaptureTarget::Screen => DisplaySource::Screen,
-            CaptureTarget::Window { id: window_number } => DisplaySource::Window {
-                bounds: get_window_bounds(window_number).unwrap(),
-            },
-        },
-        camera,
-        audio,
-        mouse_moves,
-        mouse_clicks,
-        stop_signal,
+    if let Some(window) = CapWindowId::Main.get(&app) {
+        window.minimize().ok();
     }
+
+    if let Some(window) = CapWindowId::InProgressRecording.get(&app) {
+        window.eval("window.location.reload()").ok();
+    } else {
+        ShowCapWindow::InProgressRecording { position: None }
+            .show(&app)
+            .ok();
+    }
+
+    AppSounds::StartRecording.play();
+
+    RecordingStarted.emit(&app).ok();
+
+    Ok(())
 }
 
-fn get_cursor_id() -> String {
-    autoreleasepool(|| {
-        // Get the NSCursor class
-        let nscursor_class = match Class::get("NSCursor") {
-            Some(cls) => cls,
-            None => return "Unknown".to_string(),
-        };
+#[tauri::command]
+#[specta::specta]
+pub async fn pause_recording(state: MutableState<'_, App>) -> Result<(), String> {
+    let mut state = state.write().await;
 
-        unsafe {
-            // Get the current cursor
-            let current_cursor: *mut Object = msg_send![nscursor_class, currentSystemCursor];
-            if current_cursor.is_null() {
-                return "Unknown".to_string();
+    if let Some(recording) = state.current_recording.as_mut() {
+        recording.pause().await.map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn resume_recording(state: MutableState<'_, App>) -> Result<(), String> {
+    let mut state = state.write().await;
+
+    if let Some(recording) = state.current_recording.as_mut() {
+        recording.resume().await.map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn stop_recording(app: AppHandle, state: MutableState<'_, App>) -> Result<(), String> {
+    let mut state = state.write().await;
+    let Some(current_recording) = state.clear_current_recording() else {
+        return Err("Recording not in progress".to_string())?;
+    };
+
+    let completed_recording = current_recording.stop().await.map_err(|e| e.to_string())?;
+
+    handle_recording_end(app, Some(completed_recording), &mut state).await?;
+
+    Ok(())
+}
+
+// runs when a recording ends, whether from success or failure
+async fn handle_recording_end(
+    app: AppHandle,
+    completed_recording: Option<CompletedRecording>,
+    state: &mut App,
+) -> Result<(), String> {
+    // Clear current recording, just in case :)
+    state.current_recording.take();
+
+    if let Some(window) = CapWindowId::InProgressRecording.get(&app) {
+        window.hide().unwrap();
+    }
+
+    if let Some(window) = CapWindowId::Main.get(&app) {
+        window.unminimize().ok();
+    }
+
+    if let Some(completed_recording) = completed_recording {
+        handle_recording_finish(&app, completed_recording, state).await?;
+    };
+
+    AppSounds::StopRecording.play();
+
+    CurrentRecordingChanged.emit(&app).ok();
+
+    Ok(())
+}
+
+// runs when a recording successfully finishes
+async fn handle_recording_finish(
+    app: &AppHandle,
+    completed_recording: CompletedRecording,
+    state: &mut App,
+) -> Result<(), String> {
+    let recording_dir = completed_recording.project_path().clone();
+    let id = completed_recording.id().clone();
+
+    let screenshots_dir = recording_dir.join("screenshots");
+    std::fs::create_dir_all(&screenshots_dir).ok();
+
+    let display_output_path = match &completed_recording {
+        CompletedRecording::Studio(recording) => match &recording.meta {
+            StudioRecordingMeta::SingleSegment { segment } => {
+                segment.display.path.to_path(&recording_dir)
             }
-
-            // Define an array of known cursor names
-            let cursor_names = [
-                "arrowCursor",
-                "IBeamCursor",
-                "crosshairCursor",
-                "closedHandCursor",
-                "openHandCursor",
-                "pointingHandCursor",
-                "resizeLeftCursor",
-                "resizeRightCursor",
-                "resizeLeftRightCursor",
-                "resizeUpCursor",
-                "resizeDownCursor",
-                "resizeUpDownCursor",
-                "disappearingItemCursor",
-                "IBeamCursorForVerticalLayout",
-                "operationNotAllowedCursor",
-                "dragLinkCursor",
-                "dragCopyCursor",
-                "contextualMenuCursor",
-            ];
-
-            // Iterate through known cursor names
-            for cursor_name in cursor_names.iter() {
-                let sel = Sel::register(cursor_name);
-                let cursor: *mut Object = msg_send![nscursor_class, performSelector:sel];
-                if !cursor.is_null() {
-                    let is_equal: BOOL = msg_send![current_cursor, isEqual:cursor];
-                    if is_equal == YES {
-                        return cursor_name.to_string();
-                    }
-                }
+            StudioRecordingMeta::MultipleSegments { inner } => {
+                inner.segments[0].display.path.to_path(&recording_dir)
             }
-
-            // If no match is found, return "Unknown"
-            "Unknown".to_string()
+        },
+        CompletedRecording::Instant(recording) => {
+            recording.project_path.join("./content/output.mp4")
         }
-    })
+    };
+
+    let display_screenshot = screenshots_dir.join("display.jpg");
+    create_screenshot(display_output_path, display_screenshot.clone(), None).await?;
+
+    let meta_inner = match completed_recording {
+        CompletedRecording::Studio(recording) => {
+            let recordings = ProjectRecordings::new(&recording_dir, &recording.meta);
+
+            let config = project_config_from_recording(
+                &recording,
+                &recordings,
+                PresetsStore::get_default_preset(&app)?.map(|p| p.config),
+            );
+
+            config.write(&recording_dir).map_err(|e| e.to_string())?;
+
+            if let Some(settings) = GeneralSettingsStore::get(&app).ok().flatten() {
+                if settings.open_editor_after_recording {
+                    open_editor(app.clone(), id.clone());
+                }
+            };
+
+            ShowCapWindow::RecordingsOverlay.show(&app).ok();
+
+            let _ = NewStudioRecordingAdded {
+                path: recording_dir.clone(),
+            }
+            .emit(app);
+
+            RecordingMetaInner::Studio(recording.meta)
+        }
+        CompletedRecording::Instant(recording) => {
+            if let Some(pre_created_video) = state.pre_created_video.take() {
+                spawn_actor({
+                    let app = app.clone();
+                    async move {
+                        // Copy link to clipboard
+                        let _ = app.clipboard().write_text(pre_created_video.link.clone());
+
+                        // Send notification for shareable link
+                        notifications::send_notification(
+                            &app,
+                            notifications::NotificationType::ShareableLinkCopied,
+                        );
+
+                        // Open the pre-created shareable link
+                        open_external_link(app.clone(), pre_created_video.link.clone()).ok();
+
+                        // Start the upload process in the background with retry mechanism
+                        let app = app.clone();
+
+                        tauri::async_runtime::spawn(async move {
+                            let max_retries = 3;
+                            let mut retry_count = 0;
+
+                            while retry_count < max_retries {
+                                match upload_exported_video(
+                                    app.clone(),
+                                    id.clone(),
+                                    UploadMode::Initial {
+                                        pre_created_video: Some(pre_created_video.clone()),
+                                    },
+                                )
+                                .await
+                                {
+                                    Ok(_) => {
+                                        println!("Video uploaded successfully");
+                                        // Don't send notification here since we already did it above
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        retry_count += 1;
+                                        println!(
+                                            "Error during auto-upload (attempt {}/{}): {}",
+                                            retry_count, max_retries, e
+                                        );
+
+                                        if retry_count < max_retries {
+                                            tokio::time::sleep(std::time::Duration::from_secs(5))
+                                                .await;
+                                        } else {
+                                            println!("Max retries reached. Upload failed.");
+                                            notifications::send_notification(
+                                                &app,
+                                                notifications::NotificationType::UploadFailed,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+
+            RecordingMetaInner::Instant(recording.meta)
+        }
+    };
+
+    let _ = RecordingStopped {
+        path: recording_dir.clone(),
+    }
+    .emit(app);
+
+    let meta = RecordingMeta {
+        project_path: recording_dir,
+        sharing: None,
+        pretty_name: format!(
+            "Cap {}",
+            chrono::Local::now().format("%Y-%m-%d at %H.%M.%S")
+        ),
+        inner: meta_inner,
+    };
+
+    meta.save_for_project()
+        .map_err(|e| format!("Failed to save recording meta: {e}"))?;
+
+    Ok(())
+}
+
+fn generate_zoom_segments_from_clicks(
+    recording: &CompletedStudioRecording,
+    recordings: &ProjectRecordings,
+) -> Vec<ZoomSegment> {
+    let mut segments = vec![];
+
+    let max_duration = recordings.duration();
+
+    const ZOOM_SEGMENT_AFTER_CLICK_PADDING: f64 = 1.5;
+
+    // single-segment only
+    // for click in &recording.cursor_data.clicks {
+    //     let time = click.process_time_ms / 1000.0;
+
+    //     if segments.last().is_none() {
+    //         segments.push(ZoomSegment {
+    //             start: (click.process_time_ms / 1000.0 - (ZOOM_DURATION + 0.2)).max(0.0),
+    //             end: click.process_time_ms / 1000.0 + ZOOM_SEGMENT_AFTER_CLICK_PADDING,
+    //             amount: 2.0,
+    //         });
+    //     } else {
+    //         let last_segment = segments.last_mut().unwrap();
+
+    //         if click.down {
+    //             if last_segment.end > time {
+    //                 last_segment.end =
+    //                     (time + ZOOM_SEGMENT_AFTER_CLICK_PADDING).min(recordings.duration());
+    //             } else if time < max_duration - ZOOM_DURATION {
+    //                 segments.push(ZoomSegment {
+    //                     start: (time - ZOOM_DURATION).max(0.0),
+    //                     end: time + ZOOM_SEGMENT_AFTER_CLICK_PADDING,
+    //                     amount: 2.0,
+    //                 });
+    //             }
+    //         } else {
+    //             last_segment.end =
+    //                 (time + ZOOM_SEGMENT_AFTER_CLICK_PADDING).min(recordings.duration());
+    //         }
+    //     }
+    // }
+
+    segments
+}
+
+fn project_config_from_recording(
+    completed_recording: &CompletedStudioRecording,
+    recordings: &ProjectRecordings,
+    default_config: Option<ProjectConfiguration>,
+) -> ProjectConfiguration {
+    ProjectConfiguration {
+        timeline: Some(TimelineConfiguration {
+            segments: recordings
+                .segments
+                .iter()
+                .enumerate()
+                .map(|(i, segment)| TimelineSegment {
+                    recording_segment: i as u32,
+                    start: 0.0,
+                    end: segment.duration(),
+                    timescale: 1.0,
+                })
+                .collect(),
+            zoom_segments: generate_zoom_segments_from_clicks(&completed_recording, &recordings),
+        }),
+        ..default_config.unwrap_or_default()
+    }
 }

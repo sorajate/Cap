@@ -1,0 +1,45 @@
+import { ApiFetcher, initClient } from "@ts-rest/core";
+import { contract, licenseContract } from "@cap/web-api-contract";
+import { fetch } from "@tauri-apps/plugin-http";
+
+import { clientEnv } from "./env";
+import { authStore } from "~/store";
+
+const api: ApiFetcher = async (args) => {
+  const resp = await fetch(args.path, args);
+
+  let body;
+
+  const contentType = resp.headers.get("content-type");
+  if (contentType === "application/json") {
+    body = await resp.json();
+  } else {
+    body = await resp.text();
+  }
+
+  return {
+    body,
+    status: resp.status,
+    headers: resp.headers,
+  };
+};
+
+export const apiClient = initClient(contract, {
+  baseUrl: `${clientEnv.VITE_SERVER_URL}/api`,
+  api,
+});
+export const licenseApiClient = initClient(licenseContract, {
+  baseUrl: `https://l.cap.so/api`,
+  api,
+});
+
+export async function maybeProtectedHeaders() {
+  const token = (await authStore.get())?.token;
+  return { authorization: token ? `Bearer ${token}` : undefined };
+}
+
+export async function protectedHeaders() {
+  const { authorization } = await maybeProtectedHeaders();
+  if (!authorization) throw new Error("Not authorized");
+  return { authorization };
+}

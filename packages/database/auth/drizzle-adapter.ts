@@ -3,11 +3,12 @@ import { and, eq } from "drizzle-orm";
 import { accounts, sessions, users, verificationTokens } from "../schema";
 import type { Adapter } from "next-auth/adapters";
 import type { PlanetScaleDatabase } from "drizzle-orm/planetscale-serverless";
-import { stripe } from "@cap/utils";
+import { stripe, STRIPE_AVAILABLE } from "@cap/utils";
+import { serverEnv } from "@cap/env";
 
 export function DrizzleAdapter(db: PlanetScaleDatabase): Adapter {
   return {
-    async createUser(userData) {
+    async createUser(userData: any) {
       await db.insert(users).values({
         id: nanoId(),
         email: userData.email,
@@ -24,19 +25,21 @@ export function DrizzleAdapter(db: PlanetScaleDatabase): Adapter {
       const row = rows[0];
       if (!row) throw new Error("User not found");
 
-      const customer = await stripe.customers.create({
-        email: userData.email,
-        metadata: {
-          userId: nanoId(),
-        },
-      });
+      if (STRIPE_AVAILABLE) {
+        const customer = await stripe.customers.create({
+          email: userData.email,
+          metadata: {
+            userId: nanoId(),
+          },
+        });
 
-      await db
-        .update(users)
-        .set({
-          stripeCustomerId: customer.id,
-        })
-        .where(eq(users.id, row.id));
+        await db
+          .update(users)
+          .set({
+            stripeCustomerId: customer.id,
+          })
+          .where(eq(users.id, row.id));
+      }
 
       return row;
     },
@@ -54,7 +57,11 @@ export function DrizzleAdapter(db: PlanetScaleDatabase): Adapter {
         .select()
         .from(users)
         .where(eq(users.email, email))
-        .limit(1);
+        .limit(1)
+        .catch((e) => {
+          console.log(e);
+          throw e;
+        });
       const row = rows[0];
       return row ?? null;
     },
@@ -88,7 +95,7 @@ export function DrizzleAdapter(db: PlanetScaleDatabase): Adapter {
     async deleteUser(userId) {
       await db.delete(users).where(eq(users.id, userId));
     },
-    async linkAccount(account) {
+    async linkAccount(account: any) {
       await db.insert(accounts).values({
         id: nanoId(),
         userId: account.userId,
@@ -104,7 +111,7 @@ export function DrizzleAdapter(db: PlanetScaleDatabase): Adapter {
         token_type: account.token_type,
       });
     },
-    async unlinkAccount({ providerAccountId, provider }) {
+    async unlinkAccount({ providerAccountId, provider }: any) {
       await db
         .delete(accounts)
         .where(
@@ -176,6 +183,7 @@ export function DrizzleAdapter(db: PlanetScaleDatabase): Adapter {
       await db.delete(sessions).where(eq(sessions.sessionToken, sessionToken));
     },
     async createVerificationToken(verificationToken) {
+      console.log({ verificationToken });
       // First, check if a token for the given identifier already exists
       const existingTokens = await db
         .select()

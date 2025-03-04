@@ -1,39 +1,44 @@
-use std::path::Path;
+use std::future::Future;
 
-#[cfg(unix)]
-pub fn create_named_pipe(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use nix::sys::stat;
-    use nix::unistd;
-    std::fs::remove_file(path).ok();
-    unistd::mkfifo(path, stat::Mode::S_IRWXU)?;
-    Ok(())
+use tracing::Instrument;
+
+#[cfg(windows)]
+pub fn get_last_win32_error_formatted() -> String {
+    format_error_message(unsafe { windows::Win32::Foundation::GetLastError().0 })
 }
 
 #[cfg(windows)]
-pub fn create_named_pipe(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null_mut;
-    use winapi::um::winbase::{CreateNamedPipeA, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT};
-    use winapi::um::handleapi::INVALID_HANDLE_VALUE;
-
-    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let path_narrow: Vec<i8> = path_wide.iter().map(|&c| c as i8).collect();
-    let handle = unsafe {
-        CreateNamedPipeA(
-            path_narrow.as_ptr(),
-            PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            1,
-            4096,
-            4096,
-            0,
-            null_mut(),
-        )
+pub fn format_error_message(error_code: u32) -> String {
+    use windows::{
+        core::PWSTR,
+        Win32::System::Diagnostics::Debug::{FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM},
     };
 
-    if handle == INVALID_HANDLE_VALUE {
-        return Err("Failed to create named pipe".into());
+    let mut buffer = vec![0u16; 1024];
+    match unsafe {
+        FormatMessageW(
+            FORMAT_MESSAGE_FROM_SYSTEM,
+            None,
+            error_code,
+            0,
+            PWSTR(buffer.as_mut_ptr()),
+            buffer.len() as u32,
+            None,
+        )
+    } {
+        0 => format!("Unknown error: {}", error_code),
+        len => String::from_utf16_lossy(&buffer[..len as usize])
+            .trim()
+            .to_string(),
     }
+}
 
-    Ok(())
+/// Wrapper around tokio::spawn that inherits the current tracing subscriber and span.
+pub fn spawn_actor<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    use tracing::instrument::WithSubscriber;
+    tokio::spawn(future.with_current_subscriber().in_current_span())
 }

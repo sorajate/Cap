@@ -5,9 +5,10 @@ import { getCurrentUser } from "@cap/database/auth/session";
 import { cookies } from "next/headers";
 import { isUserOnProPlan, stripe } from "@cap/utils";
 import { eq } from "drizzle-orm";
+import { clientEnv } from "@cap/env";
 
 const allowedOrigins = [
-  process.env.NEXT_PUBLIC_URL,
+  clientEnv.NEXT_PUBLIC_WEB_URL,
   "http://localhost:3001",
   "tauri://localhost",
   "http://tauri.localhost",
@@ -18,6 +19,8 @@ export async function OPTIONS(req: NextRequest) {
   const params = req.nextUrl.searchParams;
   const origin = params.get("origin") || null;
   const originalOrigin = req.nextUrl.origin;
+
+  console.log("[OPTIONS] Handling OPTIONS request");
 
   return new Response(null, {
     status: 200,
@@ -37,8 +40,11 @@ export async function OPTIONS(req: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  console.log("[POST] Starting subscription request");
+
   const token = request.headers.get("authorization")?.split(" ")[1];
   if (token) {
+    console.log("[POST] Setting auth cookie");
     cookies().set({
       name: "next-auth.session-token",
       value: token,
@@ -56,36 +62,45 @@ export async function POST(request: NextRequest) {
   const origin = params.get("origin") || null;
   const originalOrigin = request.nextUrl.origin;
 
+  console.log("[POST] User:", user?.id);
+  console.log("[POST] Price ID:", priceId);
+
   if (!priceId) {
-    return new Response(JSON.stringify({ error: true }), {
-      status: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin":
-          origin && allowedOrigins.includes(origin)
-            ? origin
-            : allowedOrigins.includes(originalOrigin)
-            ? originalOrigin
-            : "null",
-        "Access-Control-Allow-Credentials": "true",
-      },
-    });
+    console.log("[POST] Error: No price ID provided");
+    return Response.json(
+      { error: true },
+      {
+        status: 400,
+        headers: {
+          "Access-Control-Allow-Origin":
+            origin && allowedOrigins.includes(origin)
+              ? origin
+              : allowedOrigins.includes(originalOrigin)
+              ? originalOrigin
+              : "null",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
+    );
   }
 
   if (!user) {
-    return new Response(JSON.stringify({ error: true, auth: false }), {
-      status: 401,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin":
-          origin && allowedOrigins.includes(origin)
-            ? origin
-            : allowedOrigins.includes(originalOrigin)
-            ? originalOrigin
-            : "null",
-        "Access-Control-Allow-Credentials": "true",
-      },
-    });
+    console.log("[POST] Error: No authenticated user");
+    return Response.json(
+      { error: true, auth: false },
+      {
+        status: 401,
+        headers: {
+          "Access-Control-Allow-Origin":
+            origin && allowedOrigins.includes(origin)
+              ? origin
+              : allowedOrigins.includes(originalOrigin)
+              ? originalOrigin
+              : "null",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
+    );
   }
 
   if (
@@ -93,22 +108,26 @@ export async function POST(request: NextRequest) {
       subscriptionStatus: user.stripeSubscriptionStatus as string,
     })
   ) {
-    return new Response(JSON.stringify({ error: true, subscription: true }), {
-      status: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin":
-          origin && allowedOrigins.includes(origin)
-            ? origin
-            : allowedOrigins.includes(originalOrigin)
-            ? originalOrigin
-            : "null",
-        "Access-Control-Allow-Credentials": "true",
-      },
-    });
+    console.log("[POST] Error: User already on Pro plan");
+    return Response.json(
+      { error: true, subscription: true },
+      {
+        status: 400,
+        headers: {
+          "Access-Control-Allow-Origin":
+            origin && allowedOrigins.includes(origin)
+              ? origin
+              : allowedOrigins.includes(originalOrigin)
+              ? originalOrigin
+              : "null",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
+    );
   }
 
   if (!user.stripeCustomerId) {
+    console.log("[POST] Creating new Stripe customer");
     const customer = await stripe.customers.create({
       email: user.email,
       metadata: {
@@ -124,8 +143,10 @@ export async function POST(request: NextRequest) {
       .where(eq(users.id, user.id));
 
     customerId = customer.id;
+    console.log("[POST] Created Stripe customer:", customerId);
   }
 
+  console.log("[POST] Creating checkout session");
   const checkoutSession = await stripe.checkout.sessions.create({
     customer: customerId as string,
     line_items: [
@@ -135,16 +156,36 @@ export async function POST(request: NextRequest) {
       },
     ],
     mode: "subscription",
-    success_url: `${process.env.NEXT_PUBLIC_URL}/dashboard/caps?upgrade=true`,
-    cancel_url: `${process.env.NEXT_PUBLIC_URL}/pricing`,
+    success_url: `${clientEnv.NEXT_PUBLIC_WEB_URL}/dashboard/caps?upgrade=true`,
+    cancel_url: `${clientEnv.NEXT_PUBLIC_WEB_URL}/pricing`,
     allow_promotion_codes: true,
   });
 
   if (checkoutSession.url) {
-    return new Response(JSON.stringify({ url: checkoutSession.url }), {
-      status: 200,
+    console.log("[POST] Checkout session created successfully");
+    return Response.json(
+      { url: checkoutSession.url },
+      {
+        status: 200,
+        headers: {
+          "Access-Control-Allow-Origin":
+            origin && allowedOrigins.includes(origin)
+              ? origin
+              : allowedOrigins.includes(originalOrigin)
+              ? originalOrigin
+              : "null",
+          "Access-Control-Allow-Credentials": "true",
+        },
+      }
+    );
+  }
+
+  console.log("[POST] Error: Failed to create checkout session");
+  return Response.json(
+    { error: true },
+    {
+      status: 400,
       headers: {
-        "Content-Type": "application/json",
         "Access-Control-Allow-Origin":
           origin && allowedOrigins.includes(origin)
             ? origin
@@ -153,20 +194,6 @@ export async function POST(request: NextRequest) {
             : "null",
         "Access-Control-Allow-Credentials": "true",
       },
-    });
-  }
-
-  return new Response(JSON.stringify({ error: true }), {
-    status: 400,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin":
-        origin && allowedOrigins.includes(origin)
-          ? origin
-          : allowedOrigins.includes(originalOrigin)
-          ? originalOrigin
-          : "null",
-      "Access-Control-Allow-Credentials": "true",
-    },
-  });
+    }
+  );
 }

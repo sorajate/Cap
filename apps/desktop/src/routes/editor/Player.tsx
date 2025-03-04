@@ -1,14 +1,24 @@
 import { DropdownMenu as KDropdownMenu } from "@kobalte/core/dropdown-menu";
 import { Select as KSelect } from "@kobalte/core/select";
 import { ToggleButton as KToggleButton } from "@kobalte/core/toggle-button";
+import { createEventListener } from "@solid-primitives/event-listener";
 import { createElementBounds } from "@solid-primitives/bounds";
 import { cx } from "cva";
-import { For, Show, Suspense, createEffect, createSignal } from "solid-js";
+import {
+  For,
+  Show,
+  Suspense,
+  createEffect,
+  createResource,
+  createSignal,
+  on,
+} from "solid-js";
 import { reconcile } from "solid-js/store";
 
 import { type AspectRatio, commands } from "~/utils/tauri";
-import { useEditorContext } from "./context";
+import { FPS, OUTPUT_SIZE, useEditorContext } from "./context";
 import { ASPECT_RATIOS } from "./projectConfig";
+import { authStore } from "~/store";
 import {
   ComingSoonTooltip,
   DropdownItem,
@@ -16,11 +26,11 @@ import {
   MenuItem,
   MenuItemList,
   PopperContent,
+  Slider,
   dropdownContainerClasses,
   topLeftAnimateClasses,
 } from "./ui";
 import { formatTime } from "./utils";
-import { flags } from "~/flags";
 
 export function Player() {
   const {
@@ -28,19 +38,25 @@ export function Player() {
     videoId,
     editorInstance,
     history,
-    currentFrame,
+    latestFrame,
     setDialog,
     playbackTime,
+    setPlaybackTime,
+    previewTime,
+    setPreviewTime,
     playing,
     setPlaying,
     split,
     setSplit,
+    totalDuration,
+    state,
+    zoomOutLimit,
   } = useEditorContext();
 
-  let canvasRef: HTMLCanvasElement;
+  let canvasRef!: HTMLCanvasElement;
 
   createEffect(() => {
-    const frame = currentFrame();
+    const frame = latestFrame();
     if (!frame) return;
     const ctx = canvasRef.getContext("2d");
     ctx?.putImageData(frame.data, 0, 0);
@@ -52,7 +68,7 @@ export function Player() {
 
   const splitButton = () => (
     <EditorButton<typeof KToggleButton>
-      disabled={flags.split}
+      disabled={!window.FLAGS.split}
       pressed={split()}
       onChange={setSplit}
       as={KToggleButton}
@@ -63,6 +79,55 @@ export function Player() {
     </EditorButton>
   );
 
+  const isAtEnd = () => {
+    const total = totalDuration();
+    return total > 0 && total - playbackTime() <= 0.1;
+  };
+
+  createEffect(() => {
+    if (isAtEnd() && playing()) {
+      commands.stopPlayback();
+      setPlaying(false);
+    }
+  });
+
+  const handlePlayPauseClick = async () => {
+    try {
+      if (isAtEnd()) {
+        await commands.stopPlayback();
+        setPlaybackTime(0);
+        await commands.seekTo(0);
+        await commands.startPlayback(FPS, OUTPUT_SIZE);
+        setPlaying(true);
+      } else if (playing()) {
+        await commands.stopPlayback();
+        setPlaying(false);
+      } else {
+        await commands.startPlayback(FPS, OUTPUT_SIZE);
+        setPlaying(true);
+      }
+      if (playing()) setPreviewTime();
+    } catch (error) {
+      console.error("Error handling play/pause:", error);
+      setPlaying(false);
+    }
+  };
+
+  createEventListener(document, "keydown", async (e: KeyboardEvent) => {
+    if (e.code === "Space" && e.target === document.body) {
+      e.preventDefault();
+      const prevTime = previewTime();
+
+      if (!playing()) {
+        if (prevTime !== undefined) setPlaybackTime(prevTime);
+
+        await commands.seekTo(Math.floor(playbackTime() * FPS));
+      }
+
+      await handlePlayPauseClick();
+    }
+  });
+
   return (
     <div class="flex flex-col divide-y flex-1">
       <div class="flex flex-row justify-between font-medium p-[0.75rem] text-[0.875rem] z-10 bg-gray-50">
@@ -71,7 +136,7 @@ export function Player() {
           <EditorButton
             leftIcon={<IconCapCrop />}
             onClick={() => {
-              const display = editorInstance.recordings.display;
+              const display = editorInstance.recordings.segments[0].display;
               setDialog({
                 open: true,
                 type: "crop",
@@ -109,7 +174,7 @@ export function Player() {
         </div>
       </div>
       <div ref={setCanvasContainerRef} class="bg-gray-100 flex-1 relative">
-        <Show when={currentFrame()}>
+        <Show when={latestFrame()}>
           {(currentFrame) => {
             const padding = 16;
 
@@ -125,7 +190,7 @@ export function Player() {
             };
 
             const frameAspect = () =>
-              currentFrame().width / currentFrame().height;
+              currentFrame().width / currentFrame().data.height;
 
             const size = () => {
               if (frameAspect() < containerAspect()) {
@@ -160,60 +225,81 @@ export function Player() {
                   height: `${size().height}px`,
                 }}
                 class="bg-blue-50 absolute rounded"
-                // biome-ignore lint/style/noNonNullAssertion: ref
-                ref={canvasRef!}
+                ref={canvasRef}
                 id="canvas"
                 width={currentFrame().width}
-                height={currentFrame().height}
+                height={currentFrame().data.height}
               />
             );
           }}
         </Show>
       </div>
-      <div class="flex flex-row items-center p-[0.75rem] z-10 bg-gray-50">
-        <div class="flex-1" />
-        <div class="flex flex-row items-center justify-center gap-[0.5rem] text-gray-400 text-[0.875rem]">
-          <span>{formatTime(playbackTime())}</span>
-          <button type="button" disabled>
+      <div class="flex flex-row items-center p-[0.75rem] gap-[0.5rem] z-10 bg-gray-50 justify-between">
+        <div class="flex-1 flex items-center">
+          <div class="flex-1" />
+          <Time seconds={Math.max(previewTime() ?? playbackTime(), 0)} />
+        </div>
+        <div class="flex flex-row items-center justify-center text-gray-400 text-[0.875rem]">
+          <button
+            type="button"
+            onClick={async () => {
+              setPlaying(false);
+              await commands.stopPlayback();
+              setPlaybackTime(0);
+            }}
+          >
             <IconCapFrameFirst class="size-[1.2rem]" />
           </button>
-          {!playing() ? (
-            <button
-              type="button"
-              onClick={() =>
-                commands.startPlayback(videoId).then(() => setPlaying(true))
-              }
-            >
+          <button
+            type="button"
+            onClick={handlePlayPauseClick}
+            class="hover:text-black transition-colors"
+          >
+            {!playing() || isAtEnd() ? (
               <IconCapPlayCircle class="size-[1.5rem]" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() =>
-                commands.stopPlayback(videoId).then(() => setPlaying(false))
-              }
-            >
+            ) : (
               <IconCapStopCircle class="size-[1.5rem]" />
-            </button>
-          )}
-          <button type="button" disabled>
-            <IconCapFrameLast class="size-[1rem]" />
-          </button>
-          <span>
-            {formatTime(
-              project.timeline?.segments.reduce(
-                (acc, s) => acc + (s.end - s.start) / s.timescale,
-                0
-              ) ?? editorInstance.recordingDuration
             )}
-          </span>
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              setPlaying(false);
+              await commands.stopPlayback();
+              setPlaybackTime(totalDuration());
+            }}
+          >
+            <IconCapFrameLast class="size-[1.2rem]" />
+          </button>
         </div>
-        <div class="flex-1 flex flex-row justify-end">
-          {flags.split ? (
+        <div class="flex-1 flex flex-row justify-end items-center gap-2">
+          <Time seconds={totalDuration()} />
+          <div class="flex-1" />
+          {window.FLAGS.split ? (
             splitButton()
           ) : (
             <ComingSoonTooltip>{splitButton()}</ComingSoonTooltip>
           )}
+          <div class="w-[0.5px] h-7 bg-gray-300 mx-1" />
+          <IconIcRoundSearch class="mt-0.5" />
+          <Slider
+            class="w-24"
+            minValue={0}
+            maxValue={1}
+            step={0.001}
+            value={[
+              Math.min(
+                Math.max(1 - state.timelineTransform.zoom / zoomOutLimit(), 0),
+                1
+              ),
+            ]}
+            onChange={([v]) => {
+              state.timelineTransform.updateZoom(
+                (1 - v) * zoomOutLimit(),
+                playbackTime()
+              );
+            }}
+          />
         </div>
       </div>
     </div>
@@ -320,7 +406,7 @@ function PresetsDropdown() {
               class="flex-1 overflow-y-auto scrollbar-none"
             >
               <For
-                each={presets.query()?.presets ?? []}
+                each={presets.query.data?.presets ?? []}
                 fallback={
                   <div class="w-full text-sm text-gray-400 text-center py-1">
                     No Presets
@@ -338,14 +424,14 @@ function PresetsDropdown() {
                         onClick={() => setShowSettings(false)}
                       >
                         <span class="mr-auto">{preset.name}</span>
-                        <Show when={presets.query()?.default === i()}>
+                        <Show when={presets.query.data?.default === i()}>
                           <span class="px-[0.375rem] h-[1.25rem] rounded-full bg-gray-100 text-gray-400 text-[0.75rem]">
                             Default
                           </span>
                         </Show>
                         <button
                           type="button"
-                          class="text-gray-400 hover:text-black"
+                          class="text-gray-400 hover:text-[currentColor]"
                           onClick={(e) => {
                             e.stopPropagation();
                             setShowSettings((s) => !s);
@@ -424,5 +510,13 @@ function PresetsDropdown() {
         </Suspense>
       </KDropdownMenu.Portal>
     </KDropdownMenu>
+  );
+}
+
+function Time(props: { seconds: number; fps?: number }) {
+  return (
+    <span class="text-gray-400 text-[0.875rem] tabular-nums">
+      {formatTime(props.seconds, props.fps ?? FPS)}
+    </span>
   );
 }

@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 import { getCurrentUser } from "@cap/database/auth/session";
 import { uploadToS3 } from "@/utils/video/upload/helpers";
+import { clientEnv } from "@cap/env";
 
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
@@ -13,18 +14,13 @@ export async function POST(request: NextRequest) {
   const videoCodec = formData.get("videoCodec");
   const audioCodec = formData.get("audioCodec");
 
-  const awsRegion = process.env.NEXT_PUBLIC_CAP_AWS_REGION;
-  const awsBucket = process.env.NEXT_PUBLIC_CAP_AWS_BUCKET;
+  const awsRegion = clientEnv.NEXT_PUBLIC_CAP_AWS_REGION;
+  const awsBucket = clientEnv.NEXT_PUBLIC_CAP_AWS_BUCKET;
 
   if (!user || !awsRegion || !awsBucket || !filename || !blobData) {
     console.error("Missing required data in /api/upload/new/route.ts");
 
-    return new Response(JSON.stringify({ error: true }), {
-      status: 401,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    return Response.json({ error: true }, { status: 401 });
   }
 
   const fullFilepath = `${user.id}/${videoId}/${filename}`;
@@ -44,22 +40,10 @@ export async function POST(request: NextRequest) {
   if (!upload) {
     console.error("Upload failed");
 
-    return new Response(JSON.stringify({ error: true }), {
-      status: 500,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
+    return Response.json({ error: true }, { status: 500 });
   }
 
   console.log("Upload successful");
 
-  return new Response(
-    JSON.stringify({
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    })
-  );
+  return Response.json(true, { status: 200 });
 }
